@@ -1,0 +1,5 @@
+camera_id = 0
+model_path = "models/blazepose.onnx"
+threshold_slouch = 0.05
+threshold_lean = 0.15
+violation_timeout_secs = 3
