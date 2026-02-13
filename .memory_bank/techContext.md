@@ -3,29 +3,31 @@
 ## Стек технологий
 | Компонент | Технология |
 |-----------|------------|
-| Язык | Rust (stable) |
-| CV | opencv 0.92 |
-| ML | ort 2.0.0-rc.11 (ONNX Runtime) |
-| UI | winit 0.29 |
-| Config | serde + toml |
+| Язык | Python 3.11+ |
+| CV | opencv-python |
+| ML | MediaPipe |
+| Модель | BlazePose |
 
 ## Зависимости
-- opencv (с clang-runtime)
-- ort с CUDA features
-- winit
-- anyhow, thiserror
+```
+opencv-python>=4.8.0
+mediapipe>=0.10.0
+numpy>=1.24.0
+```
 
-## Сборка
-Требует:
-- Visual Studio Build Tools + C++ компоненты
-- CUDA Toolkit
-- clang
+## Установка
+```bash
+pip install -r requirements.txt
+```
 
-## Модели
-- `models/pose_estimation_mediapipe.onnx`
-- `models/pose_landmarks_detector_full.onnx`
-- `models/pose_detection.onnx`
+## Запуск
+```bash
+python main.py
+```
+
+## Управление
+- **c** - калибровка (встаньте в правильную позу)
+- **q** - выход
 
 ## Конфигурация
-- Файл: `config.toml`
-- Параметры: камера, пороги детекции, настройки GPU
+- Файл: `config.yaml` (создается после калибровки)

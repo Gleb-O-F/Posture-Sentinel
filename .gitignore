@@ -1,21 +1,17 @@
-/target
-Cargo.lock
-*.onnx
-models/
-
-# Secrets
-.env
-.env.*
-credentials.json
-*.key
-*.pem
-*.p12
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
 
 # IDE
 .idea/
 .vscode/
 *.swp
-*.swo
 
 # OS
 .DS_Store
@@ -24,11 +20,9 @@ Thumbs.db
 # Logs
 *.log
 
-# Build artifacts
-*.exe
-*.dll
-*.dylib
+# Models (keep folder but ignore contents)
+models/*
+!models/.gitkeep
 
-# Temporary
-*.tmp
-nul
+# Config with secrets
+config.yaml
