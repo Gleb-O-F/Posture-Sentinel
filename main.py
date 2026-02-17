@@ -47,9 +47,9 @@ def set_blur(hwnd):
 @dataclass
 class Config:
     camera_id: int = 0
-    slouch_threshold: float = 0.12     # Порог сутулости (нормализованный)
-    lean_threshold: float = 0.15       # Порог приближения
-    shoulder_tilt_threshold: float = 0.12 # Порог наклона
+    slouch_threshold: float = 0.15     # Порог сжатия шеи (относительно ширины плеч)
+    lean_threshold: float = 0.15       # Порог наклона вперед (по ушам)
+    shoulder_tilt_threshold: float = 0.10 # Порог перекоса плеч
     shoulder_width_threshold: float = 0.8  # Порог разворота
     violation_timeout_sec: float = 3.0
     show_preview: bool = True
@@ -89,10 +89,7 @@ class Overlay:
             return
         if abs(self.current_alpha - self.target_alpha) > 0.005:
             step = 0.015 if self.target_alpha > self.current_alpha else 0.04
-            if self.current_alpha < self.target_alpha:
-                self.current_alpha = min(self.target_alpha, self.current_alpha + step)
-            else:
-                self.current_alpha = max(self.target_alpha, self.current_alpha - step)
+            self.current_alpha = min(self.target_alpha, self.current_alpha + step) if self.current_alpha < self.target_alpha else max(self.target_alpha, self.current_alpha - step)
             try:
                 self.root.attributes("-alpha", self.current_alpha)
             except tk.TclError:
@@ -128,35 +125,44 @@ class PostureAnalyzer:
         self.current_violation: Optional[str] = None
 
     def calibrate(self, landmarks):
-        ls, rs, le, re = landmarks[11], landmarks[12], landmarks[7], landmarks[8]
+        ls, rs, le, re, nose = landmarks[11], landmarks[12], landmarks[7], landmarks[8], landmarks[0]
         width = abs(ls.x - rs.x)
         if width <= 0: return None
+
+        # Расстояние от носа до линии плеч по вертикали, нормированное шириной плеч
+        neck_dist = ((ls.y + rs.y) / 2 - nose.y) / width
+
         self.baseline = {
-            "shoulder_y_norm": ((ls.y + rs.y) / 2) / width,
-            "ear_dist_ratio": abs(le.x - re.x) / width,
-            "shoulder_width_base": width,
-            "shoulder_tilt_base": (ls.y - rs.y) / width
+            "neck_dist": neck_dist,
+            "ear_ratio": abs(le.x - re.x) / width,
+            "tilt": (ls.y - rs.y) / width,
+            "width": width
         }
         return self.baseline
 
     def check(self, landmarks, config: Config) -> Optional[tuple[str, float]]:
-        if not self.baseline: return None
-        ls, rs, le, re = landmarks[11], landmarks[12], landmarks[7], landmarks[8]
+        if not self.baseline or "neck_dist" not in self.baseline: return None
+
+        ls, rs, le, re, nose = landmarks[11], landmarks[12], landmarks[7], landmarks[8], landmarks[0]
         curr_width = abs(ls.x - rs.x)
         if curr_width <= 0.05: return None
 
-        curr_shoulder_y_norm = ((ls.y + rs.y) / 2) / curr_width
-        curr_ear_dist_ratio = abs(le.x - re.x) / curr_width
-        curr_shoulder_tilt = (ls.y - rs.y) / curr_width
+        curr_neck_dist = ((ls.y + rs.y) / 2 - nose.y) / curr_width
+        curr_ear_ratio = abs(le.x - re.x) / curr_width
+        curr_tilt = (ls.y - rs.y) / curr_width
 
         violation = None
-        if curr_shoulder_y_norm - self.baseline.get("shoulder_y_norm", 0) > config.slouch_threshold:
+        # 1. Сутулость: когда плечи поднимаются к ушам или голова падает (дистанция сокращается)
+        if self.baseline["neck_dist"] - curr_neck_dist > config.slouch_threshold:
             violation = "slouching"
-        elif curr_ear_dist_ratio / self.baseline.get("ear_dist_ratio", 1) > 1.0 + config.lean_threshold:
+        # 2. Наклон вперед: голова становится больше относительно плеч
+        elif curr_ear_ratio / self.baseline["ear_ratio"] > 1.0 + config.lean_threshold:
             violation = "leaning_forward"
-        elif abs(curr_shoulder_tilt - self.baseline.get("shoulder_tilt_base", 0)) > config.shoulder_tilt_threshold:
+        # 3. Перекос плеч
+        elif abs(curr_tilt - self.baseline["tilt"]) > config.shoulder_tilt_threshold:
             violation = "shoulder_tilt"
-        elif curr_width / self.baseline.get("shoulder_width_base", 1) < config.shoulder_width_threshold:
+        # 4. Разворот корпуса
+        elif curr_width / self.baseline["width"] < config.shoulder_width_threshold:
             violation = "body_rotation"
 
         if violation:
@@ -222,15 +228,17 @@ class PostureApp:
             frame = cv2.flip(frame, 1)
             results = pose.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
             status_color = "green"
+            violation = None
             if results.pose_landmarks:
                 landmarks = results.pose_landmarks.landmark
                 if self.calibrate_requested:
                     self.config.baseline = self.analyzer.calibrate(landmarks)
                     self.config.save(); self.calibrate_requested = False
+                    print("Calibrated with new nose-to-shoulder model!")
                 violation = self.analyzer.check(landmarks, self.config)
                 if violation:
                     status_color = "red"
-                    self.blur_intensity = min(1.0, self.blur_intensity + 0.06)
+                    self.blur_intensity = min(1.0, self.blur_intensity + 0.08)
                 elif self.analyzer.current_violation:
                     status_color = "orange"
                 else:
