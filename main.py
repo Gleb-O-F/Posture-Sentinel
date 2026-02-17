@@ -47,10 +47,10 @@ def set_blur(hwnd):
 @dataclass
 class Config:
     camera_id: int = 0
-    slouch_threshold: float = 0.12     # Порог сутулости (нормализованный по ширине плеч)
-    lean_threshold: float = 0.15       # Порог приближения (коэффициент)
-    shoulder_tilt_threshold: float = 0.12 # Порог наклона (разница Y / ширина)
-    shoulder_width_threshold: float = 0.8  # Порог разворота (текущая ширина / базовая)
+    slouch_threshold: float = 0.12     # Порог сутулости (нормализованный)
+    lean_threshold: float = 0.15       # Порог приближения
+    shoulder_tilt_threshold: float = 0.12 # Порог наклона
+    shoulder_width_threshold: float = 0.8  # Порог разворота
     violation_timeout_sec: float = 3.0
     show_preview: bool = True
     overlay_color: str = "#FFFFFF"
@@ -89,7 +89,10 @@ class Overlay:
             return
         if abs(self.current_alpha - self.target_alpha) > 0.005:
             step = 0.015 if self.target_alpha > self.current_alpha else 0.04
-            self.current_alpha = min(self.target_alpha, self.current_alpha + step) if self.current_alpha < self.target_alpha else max(self.target_alpha, self.current_alpha - step)
+            if self.current_alpha < self.target_alpha:
+                self.current_alpha = min(self.target_alpha, self.current_alpha + step)
+            else:
+                self.current_alpha = max(self.target_alpha, self.current_alpha - step)
             try:
                 self.root.attributes("-alpha", self.current_alpha)
             except tk.TclError:
@@ -129,10 +132,10 @@ class PostureAnalyzer:
         width = abs(ls.x - rs.x)
         if width <= 0: return None
         self.baseline = {
-            "shoulder_y_norm": ((ls.y + rs.y) / 2) / width, # Позиция Y, нормированная по ширине
-            "ear_dist_ratio": abs(le.x - re.x) / width,     # Отношение ушей к плечам
-            "shoulder_width_base": width,                    # Базовая ширина для детекции разворота
-            "shoulder_tilt_base": (ls.y - rs.y) / width      # Базовый наклон
+            "shoulder_y_norm": ((ls.y + rs.y) / 2) / width,
+            "ear_dist_ratio": abs(le.x - re.x) / width,
+            "shoulder_width_base": width,
+            "shoulder_tilt_base": (ls.y - rs.y) / width
         }
         return self.baseline
 
@@ -140,31 +143,20 @@ class PostureAnalyzer:
         if not self.baseline: return None
         ls, rs, le, re = landmarks[11], landmarks[12], landmarks[7], landmarks[8]
         curr_width = abs(ls.x - rs.x)
-        if curr_width <= 0.05: return None # Слишком близко или плечи вне кадра
+        if curr_width <= 0.05: return None
 
         curr_shoulder_y_norm = ((ls.y + rs.y) / 2) / curr_width
         curr_ear_dist_ratio = abs(le.x - re.x) / curr_width
         curr_shoulder_tilt = (ls.y - rs.y) / curr_width
 
-        # Разворот корпуса: отношение текущей ширины к базовой (с учетом удаления/приближения по ушам)
-        # Упростим: если отношение ушей к плечам резко растет, значит мы наклонились вперед
-        # Если ширина плеч резко падает относительно ушей - значит разворот
-
         violation = None
-
-        # 1. Сутулость (нормированная)
         if curr_shoulder_y_norm - self.baseline.get("shoulder_y_norm", 0) > config.slouch_threshold:
             violation = "slouching"
-        # 2. Наклон вперед (по ушам относительно плеч)
         elif curr_ear_dist_ratio / self.baseline.get("ear_dist_ratio", 1) > 1.0 + config.lean_threshold:
             violation = "leaning_forward"
-        # 3. Наклон плеч (нормированный)
         elif abs(curr_shoulder_tilt - self.baseline.get("shoulder_tilt_base", 0)) > config.shoulder_tilt_threshold:
             violation = "shoulder_tilt"
-        # 4. Разворот корпуса
         elif curr_width / self.baseline.get("shoulder_width_base", 1) < config.shoulder_width_threshold:
-            # Проверка: если уши тоже сузились, значит мы просто отошли назад (не нарушение)
-            # Если плечи сузились сильнее ушей - это разворот
             violation = "body_rotation"
 
         if violation:
@@ -178,6 +170,12 @@ class PostureAnalyzer:
             self.current_violation = None
             self.violation_start = None
         return None
+
+def apply_blur_effect(frame, intensity: float = 0.5):
+    h, w = frame.shape[:2]
+    blur_amount = int(51 * intensity)
+    if blur_amount % 2 == 0: blur_amount += 1
+    return cv2.GaussianBlur(frame, (blur_amount, blur_amount), 0)
 
 class PostureApp:
     def __init__(self):
@@ -201,6 +199,10 @@ class PostureApp:
         self.show_preview = not self.show_preview
         self.config.show_preview = self.show_preview
         self.config.save()
+
+    def run_overlay(self):
+        self.overlay = Overlay(self.config.overlay_color)
+        self.overlay.run()
 
     def run_tray(self):
         menu = pystray.Menu(pystray.MenuItem("Show/Hide Preview", self.toggle_preview, checked=lambda item: self.show_preview),
@@ -232,7 +234,7 @@ class PostureApp:
                 elif self.analyzer.current_violation:
                     status_color = "orange"
                 else:
-                    self.blur_intensity = max(0.0, self.blur_intensity - 0.04)
+                    self.blur_intensity = max(0.0, self.blur_intensity - 0.25)
                 if self.show_preview: drawing.draw_landmarks(frame, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
             else: self.blur_intensity = max(0.0, self.blur_intensity - 0.1)
             if self.overlay: self.overlay.set_alpha(self.blur_intensity)
