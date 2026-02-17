@@ -1,8 +1,8 @@
 import cv2
 import mediapipe as mp
 import numpy as np
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Optional, Dict
 from pathlib import Path
 import time
 import math
@@ -14,15 +14,47 @@ import win32gui
 import win32con
 import win32api
 import tkinter as tk
+import os
+import sys
+import ctypes
+
+# WinAPI for Acrylic/Blur effect
+class ACCENTPOLICY(ctypes.Structure):
+    _fields_ = [
+        ("AccentState", ctypes.c_uint),
+        ("AccentFlags", ctypes.c_uint),
+        ("GradientColor", ctypes.c_uint),
+        ("AnimationId", ctypes.c_uint),
+    ]
+
+class WINDOWCOMPOSITIONATTRIBUTEDATA(ctypes.Structure):
+    _fields_ = [
+        ("Attribute", ctypes.c_int),
+        ("Data", ctypes.POINTER(ACCENTPOLICY)),
+        ("SizeOfData", ctypes.c_size_t),
+    ]
+
+def set_blur(hwnd):
+    accent = ACCENTPOLICY()
+    accent.AccentState = 4 # Acrylic effect
+    accent.GradientColor = 0x50FFFFFF # Semi-transparent white
+    data = WINDOWCOMPOSITIONATTRIBUTEDATA()
+    data.Attribute = 19
+    data.SizeOfData = ctypes.sizeof(accent)
+    data.Data = ctypes.pointer(accent)
+    ctypes.windll.user32.SetWindowCompositionAttribute(hwnd, ctypes.pointer(data))
 
 @dataclass
 class Config:
     camera_id: int = 0
-    slouch_threshold: float = 0.05
-    lean_threshold: float = 0.15
+    slouch_threshold: float = 0.12     # Порог сутулости (нормализованный по ширине плеч)
+    lean_threshold: float = 0.15       # Порог приближения (коэффициент)
+    shoulder_tilt_threshold: float = 0.12 # Порог наклона (разница Y / ширина)
+    shoulder_width_threshold: float = 0.8  # Порог разворота (текущая ширина / базовая)
     violation_timeout_sec: float = 3.0
     show_preview: bool = True
-    overlay_color: str = "white"
+    overlay_color: str = "#FFFFFF"
+    baseline: Optional[Dict[str, float]] = None
 
     @classmethod
     def load(cls, path: str = "config.yaml") -> "Config":
@@ -42,205 +74,182 @@ class Config:
             json.dump(self.__dict__, f)
 
 class Overlay:
-    def __init__(self, color="white"):
-        self.root = tk.Tk()
-        self.root.title("PostureSentinelOverlay")
-        self.root.attributes("-topmost", True)
-        self.root.attributes("-alpha", 0.0)
-        self.root.attributes("-fullscreen", True)
-        self.root.config(bg=color)
-        self.root.overrideredirect(True)
-
-        # Make window transparent for clicks
-        hwnd = win32gui.FindWindow(None, "PostureSentinelOverlay")
-        ex_style = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
-        win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE,
-                               ex_style | win32con.WS_EX_LAYERED | win32con.WS_EX_TRANSPARENT)
-
+    def __init__(self, color="#FFFFFF"):
+        self.root = None
+        self.color = color
         self.target_alpha = 0.0
         self.current_alpha = 0.0
+        self.running = True
 
     def set_alpha(self, alpha):
-        self.target_alpha = max(0.0, min(0.6, alpha)) # Cap at 60% opacity
+        self.target_alpha = max(0.0, min(0.85, alpha))
 
     def update(self):
+        if not self.running or not self.root:
+            return
         if abs(self.current_alpha - self.target_alpha) > 0.005:
-            step = 0.01 if self.target_alpha > self.current_alpha else 0.03
-            if self.current_alpha < self.target_alpha:
-                self.current_alpha = min(self.target_alpha, self.current_alpha + step)
-            else:
-                self.current_alpha = max(self.target_alpha, self.current_alpha - step)
-            self.root.attributes("-alpha", self.current_alpha)
-
-        self.root.after(30, self.update)
+            step = 0.015 if self.target_alpha > self.current_alpha else 0.04
+            self.current_alpha = min(self.target_alpha, self.current_alpha + step) if self.current_alpha < self.target_alpha else max(self.target_alpha, self.current_alpha - step)
+            try:
+                self.root.attributes("-alpha", self.current_alpha)
+            except tk.TclError:
+                pass
+        self.root.after(20, self.update)
 
     def run(self):
+        self.root = tk.Tk()
+        self.root.title("PostureSentinelOverlay")
+        self.root.attributes("-topmost", True, "-alpha", 0.0, "-fullscreen", True)
+        self.root.config(bg=self.color)
+        self.root.overrideredirect(True)
+        self.root.update()
+        hwnd = win32gui.FindWindow(None, "PostureSentinelOverlay")
+        if hwnd:
+            ex_style = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
+            win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, ex_style | win32con.WS_EX_LAYERED | win32con.WS_EX_TRANSPARENT)
+            set_blur(hwnd)
+            win32gui.SetWindowPos(hwnd, win32con.HWND_TOPMOST, 0, 0, 0, 0, win32con.SWP_NOMOVE | win32con.SWP_NOSIZE)
         self.update()
         self.root.mainloop()
 
     def stop(self):
-        self.root.destroy()
+        self.running = False
+        if self.root:
+            try: self.root.after(0, self.root.destroy)
+            except: pass
 
 class PostureAnalyzer:
-    def __init__(self):
-        self.baseline: Optional[dict] = None
+    def __init__(self, baseline=None):
+        self.baseline = baseline
         self.violation_start: Optional[float] = None
         self.current_violation: Optional[str] = None
 
     def calibrate(self, landmarks):
-        left_shoulder = landmarks[11]
-        right_shoulder = landmarks[12]
-        left_ear = landmarks[7]
-        right_ear = landmarks[8]
-
+        ls, rs, le, re = landmarks[11], landmarks[12], landmarks[7], landmarks[8]
+        width = abs(ls.x - rs.x)
+        if width <= 0: return None
         self.baseline = {
-            "shoulder_y": (left_shoulder.y + right_shoulder.y) / 2,
-            "ear_distance": abs(left_ear.x - right_ear.x),
-            "shoulder_center_x": (left_shoulder.x + right_shoulder.x) / 2,
-            "ear_center_x": (left_ear.x + right_ear.x) / 2,
+            "shoulder_y_norm": ((ls.y + rs.y) / 2) / width, # Позиция Y, нормированная по ширине
+            "ear_dist_ratio": abs(le.x - re.x) / width,     # Отношение ушей к плечам
+            "shoulder_width_base": width,                    # Базовая ширина для детекции разворота
+            "shoulder_tilt_base": (ls.y - rs.y) / width      # Базовый наклон
         }
+        return self.baseline
 
-    def check(self, landmarks, timeout_sec: float = 3.0) -> Optional[tuple[str, float]]:
-        if not self.baseline:
-            return None
+    def check(self, landmarks, config: Config) -> Optional[tuple[str, float]]:
+        if not self.baseline: return None
+        ls, rs, le, re = landmarks[11], landmarks[12], landmarks[7], landmarks[8]
+        curr_width = abs(ls.x - rs.x)
+        if curr_width <= 0.05: return None # Слишком близко или плечи вне кадра
 
-        current_time = time.time()
-        left_shoulder = landmarks[11]
-        right_shoulder = landmarks[12]
-        left_ear = landmarks[7]
-        right_ear = landmarks[8]
+        curr_shoulder_y_norm = ((ls.y + rs.y) / 2) / curr_width
+        curr_ear_dist_ratio = abs(le.x - re.x) / curr_width
+        curr_shoulder_tilt = (ls.y - rs.y) / curr_width
 
-        current_shoulder_y = (left_shoulder.y + right_shoulder.y) / 2
-        current_ear_distance = abs(left_ear.x - right_ear.x)
-
-        shoulder_diff = current_shoulder_y - self.baseline["shoulder_y"]
-        ear_distance_ratio = current_ear_distance / self.baseline["ear_distance"]
+        # Разворот корпуса: отношение текущей ширины к базовой (с учетом удаления/приближения по ушам)
+        # Упростим: если отношение ушей к плечам резко растет, значит мы наклонились вперед
+        # Если ширина плеч резко падает относительно ушей - значит разворот
 
         violation = None
-        if shoulder_diff > 0.05:
+
+        # 1. Сутулость (нормированная)
+        if curr_shoulder_y_norm - self.baseline.get("shoulder_y_norm", 0) > config.slouch_threshold:
             violation = "slouching"
-        elif ear_distance_ratio > 1.15:
+        # 2. Наклон вперед (по ушам относительно плеч)
+        elif curr_ear_dist_ratio / self.baseline.get("ear_dist_ratio", 1) > 1.0 + config.lean_threshold:
             violation = "leaning_forward"
+        # 3. Наклон плеч (нормированный)
+        elif abs(curr_shoulder_tilt - self.baseline.get("shoulder_tilt_base", 0)) > config.shoulder_tilt_threshold:
+            violation = "shoulder_tilt"
+        # 4. Разворот корпуса
+        elif curr_width / self.baseline.get("shoulder_width_base", 1) < config.shoulder_width_threshold:
+            # Проверка: если уши тоже сузились, значит мы просто отошли назад (не нарушение)
+            # Если плечи сузились сильнее ушей - это разворот
+            violation = "body_rotation"
 
         if violation:
             if self.current_violation == violation and self.violation_start:
-                elapsed = current_time - self.violation_start
-                if elapsed >= timeout_sec:
-                    return (violation, elapsed)
+                elapsed = time.time() - self.violation_start
+                if elapsed >= config.violation_timeout_sec: return (violation, elapsed)
             else:
                 self.current_violation = violation
-                self.violation_start = current_time
+                self.violation_start = time.time()
         else:
             self.current_violation = None
             self.violation_start = None
-
         return None
-
-def apply_blur_effect(frame, intensity: float = 0.5):
-    h, w = frame.shape[:2]
-    blur_amount = int(51 * intensity)
-    if blur_amount % 2 == 0:
-        blur_amount += 1
-    return cv2.GaussianBlur(frame, (blur_amount, blur_amount), 0)
 
 class PostureApp:
     def __init__(self):
         self.config = Config.load()
-        self.analyzer = PostureAnalyzer()
-        self.running = True
-        self.icon: Optional[pystray.Icon] = None
-        self.show_preview = self.config.show_preview
-        self.calibrate_requested = False
-        self.overlay = None
-        self.blur_intensity = 0.0
+        self.analyzer = PostureAnalyzer(self.config.baseline)
+        self.running, self.show_preview, self.calibrate_requested = True, self.config.show_preview, False
+        self.icon, self.overlay, self.blur_intensity = None, None, 0.0
 
     def create_icon_image(self, color="green"):
-        image = Image.new('RGB', (64, 64), color=(255, 255, 255))
-        draw = ImageDraw.Draw(image)
-        draw.ellipse((8, 8, 56, 56), fill=color)
-        return image
+        img = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
+        ImageDraw.Draw(img).ellipse((4, 4, 60, 60), fill=color)
+        return img
 
     def on_exit(self, icon, item):
         self.running = False
-        if self.overlay:
-            self.overlay.root.after(0, self.overlay.stop)
+        if self.overlay: self.overlay.stop()
         icon.stop()
+        os._exit(0)
 
     def toggle_preview(self, icon, item):
         self.show_preview = not self.show_preview
         self.config.show_preview = self.show_preview
         self.config.save()
 
-    def request_calibration(self, icon, item):
-        self.calibrate_requested = True
-
     def run_tray(self):
-        menu = pystray.Menu(
-            pystray.MenuItem("Show/Hide Preview", self.toggle_preview, checked=lambda item: self.show_preview),
-            pystray.MenuItem("Calibrate", self.request_calibration),
-            pystray.MenuItem("Exit", self.on_exit)
-        )
+        menu = pystray.Menu(pystray.MenuItem("Show/Hide Preview", self.toggle_preview, checked=lambda item: self.show_preview),
+                            pystray.MenuItem("Calibrate", lambda: setattr(self, 'calibrate_requested', True)),
+                            pystray.MenuItem("Exit", self.on_exit))
         self.icon = pystray.Icon("PostureSentinel", self.create_icon_image(), "Posture Sentinel", menu)
         self.icon.run()
-
-    def run_overlay(self):
-        self.overlay = Overlay(self.config.overlay_color)
-        self.overlay.run()
 
     def run_cv(self):
         mp_pose = mp.solutions.pose
         pose = mp_pose.Pose(model_complexity=1)
         drawing = mp.solutions.drawing_utils
         cap = cv2.VideoCapture(self.config.camera_id)
-
         while self.running:
             ret, frame = cap.read()
-            if not ret:
-                time.sleep(0.1)
-                continue
-
+            if not ret: time.sleep(0.1); continue
             frame = cv2.flip(frame, 1)
             results = pose.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-
             status_color = "green"
             if results.pose_landmarks:
                 landmarks = results.pose_landmarks.landmark
                 if self.calibrate_requested:
-                    self.analyzer.calibrate(landmarks)
-                    self.config.save()
-                    self.calibrate_requested = False
-
-                violation = self.analyzer.check(landmarks, self.config.violation_timeout_sec)
+                    self.config.baseline = self.analyzer.calibrate(landmarks)
+                    self.config.save(); self.calibrate_requested = False
+                violation = self.analyzer.check(landmarks, self.config)
                 if violation:
                     status_color = "red"
-                    self.blur_intensity = min(1.0, self.blur_intensity + 0.05)
+                    self.blur_intensity = min(1.0, self.blur_intensity + 0.06)
                 elif self.analyzer.current_violation:
                     status_color = "orange"
                 else:
-                    self.blur_intensity = max(0.0, self.blur_intensity - 0.05)
-
-                if self.show_preview:
-                    drawing.draw_landmarks(frame, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
-            else:
-                self.blur_intensity = max(0.0, self.blur_intensity - 0.05)
-
-            if self.overlay:
-                self.overlay.set_alpha(self.blur_intensity)
-            if self.icon:
-                self.icon.icon = self.create_icon_image(status_color)
-
+                    self.blur_intensity = max(0.0, self.blur_intensity - 0.04)
+                if self.show_preview: drawing.draw_landmarks(frame, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+            else: self.blur_intensity = max(0.0, self.blur_intensity - 0.1)
+            if self.overlay: self.overlay.set_alpha(self.blur_intensity)
+            if self.icon: self.icon.icon = self.create_icon_image(status_color)
             if self.show_preview:
                 if self.blur_intensity > 0:
-                    frame = apply_blur_effect(frame, self.blur_intensity)
+                    blur_amt = int(51 * self.blur_intensity)
+                    if blur_amt % 2 == 0: blur_amt += 1
+                    frame = cv2.GaussianBlur(frame, (blur_amt, blur_amt), 0)
+                if self.calibrate_requested: cv2.putText(frame, "CALIBRATING...", (50, 50), 1, 2, (0,255,255), 2)
+                if violation: cv2.putText(frame, f"VIOLATION: {violation[0]}", (50, 100), 1, 1.5, (0,0,255), 2)
                 cv2.imshow("Posture Sentinel", frame)
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    self.toggle_preview(None, None)
-            else:
-                cv2.destroyAllWindows()
-                cv2.waitKey(1)
-
-        cap.release()
-        cv2.destroyAllWindows()
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q'): self.toggle_preview(None, None)
+                elif key == ord('c'): self.calibrate_requested = True
+            else: cv2.destroyAllWindows(); cv2.waitKey(1)
+        cap.release(); cv2.destroyAllWindows()
 
 if __name__ == "__main__":
     app = PostureApp()
