@@ -1,6 +1,7 @@
 import cv2
 import mediapipe as mp
 import numpy as np
+import onnxruntime as ort
 from dataclasses import dataclass, field
 from typing import Optional, Dict
 from pathlib import Path
@@ -118,6 +119,58 @@ class Overlay:
             try: self.root.after(0, self.root.destroy)
             except: pass
 
+class Landmark:
+    def __init__(self, x, y, z, visibility=None, presence=None):
+        self.x = x
+        self.y = y
+        self.z = z
+        self.visibility = visibility
+        self.presence = presence
+
+class ONNXPoseDetector:
+    def __init__(self, model_path):
+        providers = ['DmlExecutionProvider', 'CPUExecutionProvider']
+        try:
+            self.session = ort.InferenceSession(model_path, providers=providers)
+            active_providers = self.session.get_providers()
+            print(f"ONNX Session initialized. Active providers: {active_providers}")
+        except Exception as e:
+            print(f"Warning: Failed to initialize ONNX with DML, falling back to CPU: {e}")
+            self.session = ort.InferenceSession(model_path, providers=['CPUExecutionProvider'])
+
+    def process(self, frame):
+        # Preprocessing: 256x256, normalize to [0, 1], NHWC format
+        img = cv2.resize(frame, (256, 256))
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        img = img.astype(np.float32) / 255.0
+        img = img[np.newaxis, ...] # Add batch dimension: (1, 256, 256, 3)
+
+        # Inference
+        # The model usually has multiple outputs; we need the landmark one (Identity)
+        input_name = self.session.get_inputs()[0].name
+        outputs = self.session.run(None, {input_name: img})
+
+        # Postprocessing: Extract 33 points * 5 parameters (x, y, z, visibility, presence)
+        # Based on the plan, landmarks are in the first 165 values of the first output
+        landmarks_raw = outputs[0].flatten()
+
+        if len(landmarks_raw) < 165:
+            return type('Result', (), {'pose_landmarks': None})()
+
+        landmarks = []
+        for i in range(0, 165, 5):
+            # Normalize x, y by 256.0 as they are in pixel coordinates in the tensor
+            x = landmarks_raw[i] / 256.0
+            y = landmarks_raw[i+1] / 256.0
+            z = landmarks_raw[i+2] / 256.0
+            vis = landmarks_raw[i+3]
+            pres = landmarks_raw[i+4]
+            landmarks.append(Landmark(x, y, z, vis, pres))
+
+        # Wrap for compatibility with existing code
+        pose_landmarks = type('PoseLandmarks', (), {'landmark': landmarks})()
+        return type('Result', (), {'pose_landmarks': pose_landmarks})()
+
 class PostureAnalyzer:
     def __init__(self, baseline=None):
         self.baseline = baseline
@@ -190,6 +243,9 @@ class PostureApp:
         self.running, self.show_preview, self.calibrate_requested = True, self.config.show_preview, False
         self.icon, self.overlay, self.blur_intensity = None, None, 0.0
 
+        model_path = os.path.join("models", "pose_landmarks_detector_full.onnx")
+        self.detector = ONNXPoseDetector(model_path)
+
     def create_icon_image(self, color="green"):
         img = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
         ImageDraw.Draw(img).ellipse((4, 4, 60, 60), fill=color)
@@ -219,14 +275,13 @@ class PostureApp:
 
     def run_cv(self):
         mp_pose = mp.solutions.pose
-        pose = mp_pose.Pose(model_complexity=1)
         drawing = mp.solutions.drawing_utils
         cap = cv2.VideoCapture(self.config.camera_id)
         while self.running:
             ret, frame = cap.read()
             if not ret: time.sleep(0.1); continue
             frame = cv2.flip(frame, 1)
-            results = pose.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            results = self.detector.process(frame)
             status_color = "green"
             violation = None
             if results.pose_landmarks:
@@ -243,7 +298,20 @@ class PostureApp:
                     status_color = "orange"
                 else:
                     self.blur_intensity = max(0.0, self.blur_intensity - 0.25)
-                if self.show_preview: drawing.draw_landmarks(frame, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+
+                # Drawing landmarks - since we use custom Landmark class, we need a small adaptation
+                # but mp drawing_utils usually expects proto objects.
+                # For simplicity in preview, we'll draw manually if needed,
+                # but let's try if it accepts our objects.
+                if self.show_preview:
+                    try:
+                        drawing.draw_landmarks(frame, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+                    except:
+                        # Fallback: draw basic points if mp.drawing fails with custom objects
+                        h, w, _ = frame.shape
+                        for lm in landmarks:
+                            cx, cy = int(lm.x * w), int(lm.y * h)
+                            cv2.circle(frame, (cx, cy), 2, (0, 255, 0), -1)
             else: self.blur_intensity = max(0.0, self.blur_intensity - 0.1)
             if self.overlay: self.overlay.set_alpha(self.blur_intensity)
             if self.icon: self.icon.icon = self.create_icon_image(status_color)
