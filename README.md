@@ -47,6 +47,8 @@ python main.py --headless --no-tray
 - **q** - выход из приложения
 - В tray-меню:
   - `Auto Start` - включить/выключить автозапуск Windows
+  - `Auto Tune` - включить/выключить авто-подстройку порогов
+  - `Auto-tune Thresholds` - запустить подстройку порогов вручную по логам
   - `Export Daily Summary` - выгрузить сводку за текущий день
   - автозапуск запускает приложение в `--headless` режиме
 
@@ -93,4 +95,26 @@ python main.py --headless --no-tray
 python tools/report.py --date 2026-03-06
 python tools/report.py --from 2026-03-01 --to 2026-03-06
 python tools/report.py --date 2026-03-06 --print
+```
+
+## Auto-tuning порогов
+
+Авто-подстройка использует логи последних дней и мягко изменяет:
+- `slouch_threshold`
+- `lean_threshold`
+- `shoulder_tilt_threshold`
+- `shoulder_width_threshold`
+
+Ограничения:
+- минимум 3 дня с логами
+- минимум 15 событий
+- изменение не более 20% за один запуск
+- безопасные границы каждого порога
+
+CLI-запуск:
+
+```bash
+python tools/tune.py --dry-run --print
+python tools/tune.py
+python tools/tune.py --lookback-days 7 --target-events 10
 ```

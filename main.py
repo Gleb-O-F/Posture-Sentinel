@@ -21,6 +21,7 @@ import ctypes
 import argparse
 from datetime import datetime
 from reporting import build_daily_summary, write_summary_file
+from tuning import tune_thresholds
 
 # WinAPI for Acrylic/Blur effect
 class ACCENTPOLICY(ctypes.Structure):
@@ -65,6 +66,9 @@ class Config:
     min_fps_before_cpu_fallback: float = 12.0
     enable_auto_cpu_fallback: bool = True
     auto_start: bool = False
+    auto_tune_enabled: bool = True
+    auto_tune_lookback_days: int = 7
+    auto_tune_target_events_per_day: float = 12.0
 
     @classmethod
     def load(cls, path: str = "config.yaml") -> "Config":
@@ -335,6 +339,29 @@ class PostureApp:
     def export_today_summary(self, icon=None, item=None):
         self.export_daily_summary()
 
+    def auto_tune_thresholds(self, icon=None, item=None):
+        if not self.config.auto_tune_enabled:
+            print("Auto-tune is disabled in config")
+            return
+
+        report = tune_thresholds(
+            config_obj=self.config,
+            logs_dir=self.logs_dir,
+            lookback_days=self.config.auto_tune_lookback_days,
+            target_events_per_day=self.config.auto_tune_target_events_per_day,
+        )
+        if report.get("applied"):
+            self.config.save()
+            day = datetime.now().strftime("%Y-%m-%d")
+            report_file = self.logs_dir / f"{day}.autotune.json"
+            self.logs_dir.mkdir(parents=True, exist_ok=True)
+            with open(report_file, "w", encoding="utf-8") as f:
+                json.dump(report, f, ensure_ascii=False, indent=2)
+            print(f"Auto-tune applied and saved: {report_file}")
+            print(f"Threshold changes: {report.get('changes', {})}")
+        else:
+            print(f"Auto-tune skipped: {report.get('reason', 'unknown')}")
+
     def create_icon_image(self, color="green"):
         img = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
         ImageDraw.Draw(img).ellipse((4, 4, 60, 60), fill=color)
@@ -413,6 +440,11 @@ class PostureApp:
             self.config.auto_start = desired
             self.config.save()
 
+    def toggle_auto_tune(self, icon=None, item=None):
+        self.config.auto_tune_enabled = not self.config.auto_tune_enabled
+        self.config.save()
+        print(f"Auto-tune enabled: {self.config.auto_tune_enabled}")
+
     def run_overlay(self):
         self.overlay = Overlay(self.config.overlay_color)
         self.overlay.run()
@@ -420,7 +452,9 @@ class PostureApp:
     def run_tray(self):
         menu = pystray.Menu(pystray.MenuItem("Show/Hide Preview", self.toggle_preview, checked=lambda item: self.show_preview),
                             pystray.MenuItem("Auto Start", self.toggle_auto_start, checked=lambda item: self.config.auto_start),
+                            pystray.MenuItem("Auto Tune", self.toggle_auto_tune, checked=lambda item: self.config.auto_tune_enabled),
                             pystray.MenuItem("Calibrate", self.request_calibration),
+                            pystray.MenuItem("Auto-tune Thresholds", self.auto_tune_thresholds),
                             pystray.MenuItem("Export Daily Summary", self.export_today_summary),
                             pystray.MenuItem("Exit", self.on_exit))
         self.icon = pystray.Icon("PostureSentinel", self.create_icon_image(), "Posture Sentinel", menu)
