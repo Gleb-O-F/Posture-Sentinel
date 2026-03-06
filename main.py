@@ -18,6 +18,9 @@ import tkinter as tk
 import os
 import sys
 import ctypes
+import argparse
+from datetime import datetime
+from reporting import build_daily_summary, write_summary_file
 
 # WinAPI for Acrylic/Blur effect
 class ACCENTPOLICY(ctypes.Structure):
@@ -56,6 +59,12 @@ class Config:
     show_preview: bool = True
     overlay_color: str = "#FFFFFF"
     baseline: Optional[Dict[str, float]] = None
+    camera_reconnect_interval_sec: float = 1.0
+    camera_read_fail_limit: int = 15
+    performance_window_sec: float = 8.0
+    min_fps_before_cpu_fallback: float = 12.0
+    enable_auto_cpu_fallback: bool = True
+    auto_start: bool = False
 
     @classmethod
     def load(cls, path: str = "config.yaml") -> "Config":
@@ -129,14 +138,42 @@ class Landmark:
 
 class ONNXPoseDetector:
     def __init__(self, model_path):
-        providers = ['DmlExecutionProvider', 'CPUExecutionProvider']
+        self.model_path = model_path
+        self.session = None
+        self.active_provider = "uninitialized"
+        self._init_session(prefer_dml=True)
+
+    def _init_session(self, prefer_dml: bool):
+        providers = ['DmlExecutionProvider', 'CPUExecutionProvider'] if prefer_dml else ['CPUExecutionProvider']
         try:
-            self.session = ort.InferenceSession(model_path, providers=providers)
+            self.session = ort.InferenceSession(self.model_path, providers=providers)
             active_providers = self.session.get_providers()
+            self.active_provider = active_providers[0] if active_providers else "unknown"
             print(f"ONNX Session initialized. Active providers: {active_providers}")
         except Exception as e:
-            print(f"Warning: Failed to initialize ONNX with DML, falling back to CPU: {e}")
-            self.session = ort.InferenceSession(model_path, providers=['CPUExecutionProvider'])
+            if prefer_dml:
+                print(f"Warning: Failed to initialize ONNX with DML, falling back to CPU: {e}")
+            else:
+                print(f"Warning: Failed to initialize ONNX session: {e}")
+            self.session = ort.InferenceSession(self.model_path, providers=['CPUExecutionProvider'])
+            self.active_provider = "CPUExecutionProvider"
+
+    def provider_short(self):
+        if self.active_provider == "DmlExecutionProvider":
+            return "dml"
+        if self.active_provider == "CPUExecutionProvider":
+            return "cpu"
+        return self.active_provider.lower()
+
+    def fallback_to_cpu(self) -> bool:
+        if self.active_provider == "CPUExecutionProvider":
+            return False
+        try:
+            self._init_session(prefer_dml=False)
+            return self.active_provider == "CPUExecutionProvider"
+        except Exception as e:
+            print(f"Warning: Failed to fallback to CPU provider: {e}")
+            return False
 
     def process(self, frame):
         # Preprocessing: 256x256, normalize to [0, 1], NHWC format
@@ -237,30 +274,144 @@ def apply_blur_effect(frame, intensity: float = 0.5):
     return cv2.GaussianBlur(frame, (blur_amount, blur_amount), 0)
 
 class PostureApp:
-    def __init__(self):
+    def __init__(self, headless: bool = False, no_tray: bool = False):
         self.config = Config.load()
         self.analyzer = PostureAnalyzer(self.config.baseline)
-        self.running, self.show_preview, self.calibrate_requested = True, self.config.show_preview, False
+        self.headless = headless
+        self.no_tray = no_tray
+        initial_preview = False if self.headless else self.config.show_preview
+        self.running, self.show_preview, self.calibrate_requested = True, initial_preview, False
         self.icon, self.overlay, self.blur_intensity = None, None, 0.0
+        self.camera_status = "init"
+        self.logs_dir = Path("logs")
+        self.last_logged_violation: Optional[str] = None
 
         model_path = os.path.join("models", "pose_landmarks_detector_full.onnx")
         self.detector = ONNXPoseDetector(model_path)
+        self.sync_auto_start_with_config()
+
+    def set_camera_status(self, status: str):
+        if status != self.camera_status:
+            self.camera_status = status
+            print(f"Camera status: {status}")
+
+    def update_tray_status(self, posture_color: str):
+        if self.camera_status == "ok":
+            tray_color = posture_color
+        elif self.camera_status == "reconnecting":
+            tray_color = "orange"
+        else:
+            tray_color = "gray"
+
+        if self.icon:
+            self.icon.icon = self.create_icon_image(tray_color)
+            provider = self.detector.provider_short().upper() if self.detector else "N/A"
+            self.icon.title = f"Posture Sentinel ({self.camera_status}, {provider})"
+
+    def log_violation(self, violation_type: str, duration_sec: float):
+        self.logs_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now()
+        log_file = self.logs_dir / f"{ts.strftime('%Y-%m-%d')}.jsonl"
+        entry = {
+            "timestamp": ts.isoformat(timespec="seconds"),
+            "violation": violation_type,
+            "duration_sec": round(duration_sec, 2),
+            "camera_status": self.camera_status,
+        }
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    def export_daily_summary(self, day: Optional[str] = None) -> Optional[Path]:
+        target_day = day or datetime.now().strftime("%Y-%m-%d")
+        summary = build_daily_summary(self.logs_dir, target_day)
+        if summary is None:
+            print(f"Summary skipped: no log file for {target_day}")
+            return None
+
+        summary_file = write_summary_file(self.logs_dir, f"{target_day}.summary.json", summary)
+        print(f"Daily summary exported: {summary_file}")
+        return summary_file
+
+    def export_today_summary(self, icon=None, item=None):
+        self.export_daily_summary()
 
     def create_icon_image(self, color="green"):
         img = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
         ImageDraw.Draw(img).ellipse((4, 4, 60, 60), fill=color)
         return img
 
+    def get_startup_launcher_path(self) -> Optional[Path]:
+        appdata = os.getenv("APPDATA")
+        if not appdata:
+            return None
+        startup_dir = Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+        return startup_dir / "PostureSentinel.bat"
+
+    def is_auto_start_enabled(self) -> bool:
+        launcher = self.get_startup_launcher_path()
+        return bool(launcher and launcher.exists())
+
+    def set_auto_start(self, enabled: bool) -> bool:
+        launcher = self.get_startup_launcher_path()
+        if launcher is None:
+            print("Auto-start unavailable: APPDATA not found")
+            return False
+
+        try:
+            if enabled:
+                launcher.parent.mkdir(parents=True, exist_ok=True)
+                script_path = Path(__file__).resolve()
+                python_path = Path(sys.executable).resolve()
+                pythonw_path = python_path.with_name("pythonw.exe")
+                launcher_python = pythonw_path if pythonw_path.exists() else python_path
+                content = (
+                    "@echo off\n"
+                    f'cd /d "{script_path.parent}"\n'
+                    f'"{launcher_python}" "{script_path}" --headless\n'
+                )
+                with open(launcher, "w", encoding="utf-8") as f:
+                    f.write(content)
+                print(f"Auto-start enabled: {launcher}")
+            else:
+                if launcher.exists():
+                    launcher.unlink()
+                print("Auto-start disabled")
+            return True
+        except Exception as e:
+            print(f"Auto-start update failed: {e}")
+            return False
+
+    def sync_auto_start_with_config(self):
+        current = self.is_auto_start_enabled()
+        desired = bool(self.config.auto_start)
+        if current == desired:
+            return
+        if self.set_auto_start(desired):
+            self.config.auto_start = desired
+            self.config.save()
+
     def on_exit(self, icon, item):
         self.running = False
         if self.overlay: self.overlay.stop()
+        self.export_daily_summary()
         icon.stop()
         os._exit(0)
 
     def toggle_preview(self, icon, item):
+        if self.headless:
+            return
         self.show_preview = not self.show_preview
         self.config.show_preview = self.show_preview
         self.config.save()
+
+    def request_calibration(self, icon=None, item=None):
+        self.calibrate_requested = True
+
+    def toggle_auto_start(self, icon=None, item=None):
+        desired = not self.config.auto_start
+        if self.set_auto_start(desired):
+            self.config.auto_start = desired
+            self.config.save()
 
     def run_overlay(self):
         self.overlay = Overlay(self.config.overlay_color)
@@ -268,7 +419,9 @@ class PostureApp:
 
     def run_tray(self):
         menu = pystray.Menu(pystray.MenuItem("Show/Hide Preview", self.toggle_preview, checked=lambda item: self.show_preview),
-                            pystray.MenuItem("Calibrate", lambda: setattr(self, 'calibrate_requested', True)),
+                            pystray.MenuItem("Auto Start", self.toggle_auto_start, checked=lambda item: self.config.auto_start),
+                            pystray.MenuItem("Calibrate", self.request_calibration),
+                            pystray.MenuItem("Export Daily Summary", self.export_today_summary),
                             pystray.MenuItem("Exit", self.on_exit))
         self.icon = pystray.Icon("PostureSentinel", self.create_icon_image(), "Posture Sentinel", menu)
         self.icon.run()
@@ -276,12 +429,81 @@ class PostureApp:
     def run_cv(self):
         mp_pose = mp.solutions.pose
         drawing = mp.solutions.drawing_utils
-        cap = cv2.VideoCapture(self.config.camera_id)
+        cap = None
+        consecutive_read_failures = 0
+        last_reconnect_attempt = 0.0
+        perf_window_start = time.time()
+        perf_frame_count = 0
+        current_fps = 0.0
+        cpu_fallback_done = False
         while self.running:
+            if cap is None or not cap.isOpened():
+                now = time.time()
+                if now - last_reconnect_attempt >= self.config.camera_reconnect_interval_sec:
+                    last_reconnect_attempt = now
+                    if cap is not None:
+                        cap.release()
+                    cap = cv2.VideoCapture(self.config.camera_id)
+                    if cap.isOpened():
+                        self.set_camera_status("ok")
+                        consecutive_read_failures = 0
+                    else:
+                        cap.release()
+                        cap = None
+                        self.set_camera_status("reconnecting")
+
+                self.update_tray_status("gray")
+                if self.show_preview:
+                    standby = np.zeros((360, 640, 3), dtype=np.uint8)
+                    cv2.putText(standby, "Camera unavailable", (150, 170), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
+                    cv2.putText(standby, "Trying to reconnect...", (145, 210), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 180, 255), 2)
+                    cv2.imshow("Posture Sentinel", standby)
+                    key = cv2.waitKey(1) & 0xFF
+                    if key == ord('q'):
+                        self.toggle_preview(None, None)
+                    elif key == ord('c'):
+                        self.calibrate_requested = True
+                else:
+                    cv2.destroyAllWindows()
+                    cv2.waitKey(1)
+                time.sleep(0.1)
+                continue
+
             ret, frame = cap.read()
-            if not ret: time.sleep(0.1); continue
+            if not ret or frame is None:
+                consecutive_read_failures += 1
+                if consecutive_read_failures >= self.config.camera_read_fail_limit:
+                    self.set_camera_status("lost")
+                    cap.release()
+                    cap = None
+                self.update_tray_status("gray")
+                time.sleep(0.05)
+                continue
+
+            consecutive_read_failures = 0
+            self.set_camera_status("ok")
             frame = cv2.flip(frame, 1)
             results = self.detector.process(frame)
+            perf_frame_count += 1
+            now = time.time()
+            elapsed_perf = now - perf_window_start
+            if elapsed_perf >= self.config.performance_window_sec:
+                current_fps = perf_frame_count / max(elapsed_perf, 1e-6)
+                print(f"Performance: {current_fps:.1f} FPS | provider={self.detector.provider_short()}")
+                if (
+                    self.config.enable_auto_cpu_fallback
+                    and not cpu_fallback_done
+                    and self.detector.active_provider == "DmlExecutionProvider"
+                    and current_fps < self.config.min_fps_before_cpu_fallback
+                ):
+                    if self.detector.fallback_to_cpu():
+                        cpu_fallback_done = True
+                        print(
+                            f"Auto fallback: switched to CPU due to low FPS "
+                            f"({current_fps:.1f} < {self.config.min_fps_before_cpu_fallback:.1f})"
+                        )
+                perf_window_start = now
+                perf_frame_count = 0
             status_color = "green"
             violation = None
             if results.pose_landmarks:
@@ -294,10 +516,14 @@ class PostureApp:
                 if violation:
                     status_color = "red"
                     self.blur_intensity = min(1.0, self.blur_intensity + 0.08)
+                    if self.last_logged_violation != violation[0]:
+                        self.log_violation(violation[0], violation[1])
+                        self.last_logged_violation = violation[0]
                 elif self.analyzer.current_violation:
                     status_color = "orange"
                 else:
                     self.blur_intensity = max(0.0, self.blur_intensity - 0.25)
+                    self.last_logged_violation = None
 
                 # Drawing landmarks - since we use custom Landmark class, we need a small adaptation
                 # but mp drawing_utils usually expects proto objects.
@@ -312,9 +538,11 @@ class PostureApp:
                         for lm in landmarks:
                             cx, cy = int(lm.x * w), int(lm.y * h)
                             cv2.circle(frame, (cx, cy), 2, (0, 255, 0), -1)
-            else: self.blur_intensity = max(0.0, self.blur_intensity - 0.1)
+            else:
+                self.blur_intensity = max(0.0, self.blur_intensity - 0.1)
+                self.last_logged_violation = None
             if self.overlay: self.overlay.set_alpha(self.blur_intensity)
-            if self.icon: self.icon.icon = self.create_icon_image(status_color)
+            self.update_tray_status(status_color)
             if self.show_preview:
                 if self.blur_intensity > 0:
                     blur_amt = int(51 * self.blur_intensity)
@@ -322,15 +550,44 @@ class PostureApp:
                     frame = cv2.GaussianBlur(frame, (blur_amt, blur_amt), 0)
                 if self.calibrate_requested: cv2.putText(frame, "CALIBRATING...", (50, 50), 1, 2, (0,255,255), 2)
                 if violation: cv2.putText(frame, f"VIOLATION: {violation[0]}", (50, 100), 1, 1.5, (0,0,255), 2)
+                cv2.putText(
+                    frame,
+                    f"Provider: {self.detector.provider_short().upper()} | FPS: {current_fps:.1f}",
+                    (20, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (255, 255, 255),
+                    2
+                )
                 cv2.imshow("Posture Sentinel", frame)
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord('q'): self.toggle_preview(None, None)
                 elif key == ord('c'): self.calibrate_requested = True
             else: cv2.destroyAllWindows(); cv2.waitKey(1)
-        cap.release(); cv2.destroyAllWindows()
+        if cap is not None:
+            cap.release()
+        cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    app = PostureApp()
-    threading.Thread(target=app.run_cv, daemon=True).start()
-    threading.Thread(target=app.run_overlay, daemon=True).start()
-    app.run_tray()
+    parser = argparse.ArgumentParser(description="Posture Sentinel")
+    parser.add_argument("--headless", action="store_true", help="Run without preview window")
+    parser.add_argument("--no-tray", action="store_true", help="Run without system tray icon")
+    args = parser.parse_args()
+
+    app = PostureApp(headless=args.headless, no_tray=args.no_tray)
+    cv_thread = threading.Thread(target=app.run_cv, daemon=True)
+    overlay_thread = threading.Thread(target=app.run_overlay, daemon=True)
+    cv_thread.start()
+    overlay_thread.start()
+
+    if args.no_tray:
+        try:
+            while app.running:
+                time.sleep(0.5)
+        except KeyboardInterrupt:
+            app.running = False
+            if app.overlay:
+                app.overlay.stop()
+            app.export_daily_summary()
+    else:
+        app.run_tray()

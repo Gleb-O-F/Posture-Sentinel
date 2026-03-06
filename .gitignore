@@ -17,6 +17,9 @@ venv/
 .DS_Store
 Thumbs.db
 
+# Hidden folders at repo root (e.g. .claude/)
+.*/
+
 # Logs
 *.log
 
@@ -26,3 +29,6 @@ models/*
 
 # Config with secrets
 config.yaml
+
+# Runtime violation logs
+logs/

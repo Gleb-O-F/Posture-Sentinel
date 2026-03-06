@@ -2,3 +2,8 @@
 opencv-python>=4.8.0
 mediapipe>=0.10.0
 numpy>=1.24.0
+onnxruntime-directml>=1.18.0; platform_system == "Windows"
+onnxruntime>=1.18.0; platform_system != "Windows"
+pystray>=0.19.5
+Pillow>=10.0.0
+pywin32>=306; platform_system == "Windows"
