@@ -1,29 +1,25 @@
-# Active Context: Posture Sentinel
+﻿# Active Context: Posture Sentinel
 
-## Текущий фокус
-Финальное тестирование.
+## Current Focus
 
-## Реализованные фичи (по PRD)
-1. ✅ 33 ключевые точки (BlazePose)
-2. ✅ Калибровка (клавиша 'c')
-3. ✅ Таймаут 3 секунды
-4. ✅ Forward Lean (>15% расстояние ушей)
-5. ✅ Наклон головы (>15° угол)
-6. ✅ **Размытие экрана** (постепенное)
+Prepare the repository for immediate testing on a target Windows machine once a working Python 3.10+ interpreter is available.
 
-## Как работает
-1. Запустить `python main.py`
-2. Нажать **'c'** для калибровки (встать в правильную позу)
-3. Нарушения показываются как:
-   - "WARNING: SLOUCHING..." - ожидание 3 сек
-   - "BAD POSTURE: SLOUCHING" - подтверждено
-   - Экран постепенно размывается
+## What Was Added Recently
 
-## Тестирование
-- Проверить FPS
-- Проверить калибровку
-- Проверить таймаут 3 сек
-- Проверить размытие
+- Environment diagnostics: `environment_checks.py`, `tools/check_env.py`
+- Performance telemetry summaries: `performance_reporting.py`, `tools/perf_report.py`
+- Test automation scripts: `tools/bootstrap.ps1`, `tools/run.ps1`, `tools/run_tests.ps1`, `tools/smoke_test.ps1`
+- Test documentation: `docs/PERF_REPORTING.md`, `docs/SETUP_AND_RUN.md`, `docs/TEST_PLAN.md`
+- Unit tests for reporting, tuning, runtime fallback, perf reporting, perf CLI, and environment checks
 
-## Known Issues
-- Размытие применяется к видео, не к системному экрану
+## Immediate Blocker
+
+The current environment still has no working Python runtime. This blocks dependency installation, unit test execution, CLI execution, and smoke testing.
+
+## Next Execution Steps On A Healthy Machine
+
+1. Run `tools/bootstrap.ps1`
+2. Run `tools/run_tests.ps1`
+3. Run `tools/smoke_test.ps1`
+4. Review generated `logs/*.jsonl` and `logs/*.perf.jsonl`
+5. Tune fallback thresholds from actual perf data

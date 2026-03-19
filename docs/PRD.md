@@ -1,64 +1,72 @@
-# PRD: AI Posture Sentinel (Rust Edition)
+# PRD: Posture Sentinel (Python Edition)
 
-## 1. Обзор продукта
+## 1. Product Overview
 
-AI Posture Sentinel — это легковесное десктопное приложение для Windows, которое использует веб-камеру и алгоритмы компьютерного зрения для мониторинга осанки пользователя в реальном времени. Приложение уведомляет пользователя о нарушении осанки путем постепенного размытия экрана (эффект "тумана").
+Posture Sentinel is a lightweight Windows desktop application that uses a webcam and local computer vision inference to monitor user posture in real time. When posture violations persist, the app gradually increases a screen blur overlay as soft feedback.
 
----
+## 2. Current Goals
 
-## 2. Цели и задачи
+| Goal | Description |
+|------|-------------|
+| Performance | Keep realtime inference usable on Windows laptops and workstations with DirectML preferred and CPU fallback available |
+| Reliability | Survive camera loss, provider downgrade, and missing history without hard crashes |
+| Privacy | Process video locally with no cloud transfer |
+| Operability | Support tray mode, headless mode, daily summaries, and threshold tuning from local logs |
 
-| Цель | Описание |
-|------|----------|
-| **Производительность** | Использование GPU Quadro P1000 для инференса нейросети (целевой FPS: 20-30) |
-| **Энергоэффективность** | Потребление ресурсов GPU не более 15%, CPU не более 5% в фоновом режиме |
-| **Приватность** | Локальная обработка видеопотока без передачи данных в облако |
+## 3. Current Stack
 
----
-
-## 3. Технологический стек
-
-| Компонент | Технология |
+| Component | Technology |
 |-----------|------------|
-| **Язык программирования** | Rust (стабильная версия) |
-| **CV библиотека** | `opencv-rust` (захват и препроцессинг) |
-| **ML Инференс** | `ort` (ONNX Runtime) с поддержкой CUDA Execution Provider |
-| **Модель** | BlazePose (MediaPipe) в формате `.onnx` (FP16 или INT8 для оптимизации под Pascal) |
-| **UI/Системные эффекты** | `winit` (окна), `window-vibrancy` (эффект Acrylic/Blur) |
+| Language | Python 3.10+ |
+| Video | OpenCV |
+| Pose inference | ONNX Runtime (`onnxruntime-directml` on Windows, CPU fallback) |
+| Landmark utilities | MediaPipe drawing helpers |
+| Desktop UX | Tkinter overlay, `pystray`, Win32 APIs |
+| Reporting | Local JSONL logs, performance logs, and JSON summaries |
 
----
+## 4. Functional Scope
 
-## 4. Функциональные требования
+### 4.1 Tracking
 
-### 4.1. Модуль отслеживания (Tracking)
+The app extracts posture landmarks and focuses on:
+- shoulders
+- ears
+- nose
 
-Приложение должно извлекать **33 ключевые точки тела** (Landmarks), фокусируясь на:
+### 4.2 Calibration
 
-- `LEFT_SHOULDER` (точка 11)
-- `RIGHT_SHOULDER` (точка 12)
-- `LEFT_EAR` (точка 7)
-- `RIGHT_EAR` (точка 8)
-- `NOSE` (точка 0)
+The user can save a baseline posture. Baseline metrics are persisted in `config.yaml`.
 
-### 4.2. Калибровка (Calibration)
+### 4.3 Posture Violations
 
-Пользователь должен иметь возможность зафиксировать «эталонную позу»:
+The app currently detects:
+- slouching
+- leaning forward
+- shoulder tilt
+- body rotation
 
-1. Пользователь нажимает кнопку «Откалибровать»
-2. Система сохраняет координаты $y_{base}$ для плеч и расстояние $d_{base}$ между ушами (глубина)
-3. Параметры сохраняются в `config.toml`
+A violation is confirmed only after it lasts longer than the configured timeout.
 
-### 4.3. Алгоритм детекции нарушений
+### 4.4 Feedback
 
-Программа фиксирует нарушение, если выполняется одно из условий в течение $T > 3$ секунд:
+The app provides:
+- fullscreen blur overlay with click-through behavior
+- system tray status indicator
+- optional preview window with provider and FPS
 
-| Тип нарушения | Условие |
-|--------------|---------|
-| **Сутулость (Slouching)** | Средняя высота плеч $y_{current}$ опустилась ниже $y_{base}$ на порог $H$ |
-| **Наклон вперед (Forward Lean)** | Расстояние между ушами $d_{current}$ увеличилось относительно $d_{base}$ на 15% (пользователь приблизился к камере) |
-| **Наклон головы** | Угол между вектором плеч и вектором ушей отклонился более чем на $15^{\circ}$ |
+### 4.5 Operations and Analytics
 
-### 4.4. Система уведомлений (The Punishment)
+The app supports:
+- `--headless`
+- `--no-tray`
+- JSONL violation logs in `logs/`
+- daily summary export
+- performance telemetry and perf summary CLI
+- threshold auto-tuning from recent history
 
-Мягкая система обратной связи — постепенное размытие экрана
+## 5. Next Delivery Targets
 
+1. Add automated smoke coverage for config loading, reporting, and tuning modules.
+2. Harden startup and runtime error handling around camera, overlay, and tray initialization.
+3. Measure DirectML vs CPU behavior on target hardware and tune fallback thresholds from real runs.
+4. Decide whether Rust remains a future migration target or should be removed from planning artifacts.

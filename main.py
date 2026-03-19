@@ -2,18 +2,16 @@ import cv2
 import mediapipe as mp
 import numpy as np
 import onnxruntime as ort
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional, Dict
 from pathlib import Path
 import time
-import math
 import json
 import threading
 import pystray
 from PIL import Image, ImageDraw
 import win32gui
 import win32con
-import win32api
 import tkinter as tk
 import os
 import sys
@@ -22,6 +20,9 @@ import argparse
 from datetime import datetime
 from reporting import build_daily_summary, write_summary_file
 from tuning import tune_thresholds
+
+class AppInitError(RuntimeError):
+    pass
 
 # WinAPI for Acrylic/Blur effect
 class ACCENTPOLICY(ctypes.Structure):
@@ -52,10 +53,10 @@ def set_blur(hwnd):
 @dataclass
 class Config:
     camera_id: int = 0
-    slouch_threshold: float = 0.15     # Порог сжатия шеи (относительно ширины плеч)
-    lean_threshold: float = 0.15       # Порог наклона вперед (по ушам)
-    shoulder_tilt_threshold: float = 0.10 # Порог перекоса плеч
-    shoulder_width_threshold: float = 0.8  # Порог разворота
+    slouch_threshold: float = 0.15     # Neck compression threshold relative to shoulder width
+    lean_threshold: float = 0.15       # Forward lean threshold based on ear distance
+    shoulder_tilt_threshold: float = 0.10 # Shoulder tilt threshold
+    shoulder_width_threshold: float = 0.8  # Body rotation threshold
     violation_timeout_sec: float = 3.0
     show_preview: bool = True
     overlay_color: str = "#FFFFFF"
@@ -72,20 +73,21 @@ class Config:
 
     @classmethod
     def load(cls, path: str = "config.yaml") -> "Config":
-        if Path(path).exists():
-            with open(path) as f:
-                try:
+        config_path = Path(path)
+        if config_path.exists():
+            try:
+                with open(config_path, encoding="utf-8") as f:
                     data = json.load(f)
-                    valid_keys = cls.__dataclass_fields__.keys()
-                    filtered_data = {k: v for k, v in data.items() if k in valid_keys}
-                    return cls(**filtered_data)
-                except Exception:
-                    return cls()
+                valid_keys = cls.__dataclass_fields__.keys()
+                filtered_data = {k: v for k, v in data.items() if k in valid_keys}
+                return cls(**filtered_data)
+            except Exception as e:
+                print(f"Warning: failed to load config from {config_path}: {e}")
         return cls()
 
     def save(self, path: str = "config.yaml"):
-        with open(path, "w") as f:
-            json.dump(self.__dict__, f)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(self.__dict__, f, ensure_ascii=False, indent=2)
 
 class Overlay:
     def __init__(self, color="#FFFFFF"):
@@ -145,6 +147,8 @@ class ONNXPoseDetector:
         self.model_path = model_path
         self.session = None
         self.active_provider = "uninitialized"
+        if not Path(model_path).exists():
+            raise AppInitError(f"ONNX model not found: {model_path}")
         self._init_session(prefer_dml=True)
 
     def _init_session(self, prefer_dml: bool):
@@ -155,12 +159,14 @@ class ONNXPoseDetector:
             self.active_provider = active_providers[0] if active_providers else "unknown"
             print(f"ONNX Session initialized. Active providers: {active_providers}")
         except Exception as e:
-            if prefer_dml:
-                print(f"Warning: Failed to initialize ONNX with DML, falling back to CPU: {e}")
-            else:
-                print(f"Warning: Failed to initialize ONNX session: {e}")
-            self.session = ort.InferenceSession(self.model_path, providers=['CPUExecutionProvider'])
-            self.active_provider = "CPUExecutionProvider"
+            if not prefer_dml:
+                raise AppInitError(f"Failed to initialize ONNX Runtime session: {e}") from e
+            print(f"Warning: Failed to initialize ONNX with DML, falling back to CPU: {e}")
+            try:
+                self.session = ort.InferenceSession(self.model_path, providers=['CPUExecutionProvider'])
+                self.active_provider = "CPUExecutionProvider"
+            except Exception as cpu_error:
+                raise AppInitError(f"Failed to initialize ONNX Runtime CPU session: {cpu_error}") from cpu_error
 
     def provider_short(self):
         if self.active_provider == "DmlExecutionProvider":
@@ -222,8 +228,7 @@ class PostureAnalyzer:
         ls, rs, le, re, nose = landmarks[11], landmarks[12], landmarks[7], landmarks[8], landmarks[0]
         width = abs(ls.x - rs.x)
         if width <= 0: return None
-
-        # Расстояние от носа до линии плеч по вертикали, нормированное шириной плеч
+        # Nose-to-shoulder vertical distance normalized by shoulder width
         neck_dist = ((ls.y + rs.y) / 2 - nose.y) / width
 
         self.baseline = {
@@ -246,16 +251,16 @@ class PostureAnalyzer:
         curr_tilt = (ls.y - rs.y) / curr_width
 
         violation = None
-        # 1. Сутулость: когда плечи поднимаются к ушам или голова падает (дистанция сокращается)
+        # 1. Slouching: neck distance shrinks relative to baseline
         if self.baseline["neck_dist"] - curr_neck_dist > config.slouch_threshold:
             violation = "slouching"
-        # 2. Наклон вперед: голова становится больше относительно плеч
+        # 2. Forward lean: ear distance grows relative to baseline
         elif curr_ear_ratio / self.baseline["ear_ratio"] > 1.0 + config.lean_threshold:
             violation = "leaning_forward"
-        # 3. Перекос плеч
+        # 3. Shoulder tilt
         elif abs(curr_tilt - self.baseline["tilt"]) > config.shoulder_tilt_threshold:
             violation = "shoulder_tilt"
-        # 4. Разворот корпуса
+        # 4. Body rotation
         elif curr_width / self.baseline["width"] < config.shoulder_width_threshold:
             violation = "body_rotation"
 
@@ -289,8 +294,11 @@ class PostureApp:
         self.camera_status = "init"
         self.logs_dir = Path("logs")
         self.last_logged_violation: Optional[str] = None
+        self.overlay_available = True
+        self.tray_available = not no_tray
+        self.last_perf_log_provider: Optional[str] = None
 
-        model_path = os.path.join("models", "pose_landmarks_detector_full.onnx")
+        model_path = Path("models") / "pose_landmarks_detector_full.onnx"
         self.detector = ONNXPoseDetector(model_path)
         self.sync_auto_start_with_config()
 
@@ -335,6 +343,43 @@ class PostureApp:
         summary_file = write_summary_file(self.logs_dir, f"{target_day}.summary.json", summary)
         print(f"Daily summary exported: {summary_file}")
         return summary_file
+
+
+    def log_runtime_event(self, event_type: str, **payload):
+        self.logs_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now()
+        log_file = self.logs_dir / f"{ts.strftime('%Y-%m-%d')}.perf.jsonl"
+        entry = {
+            "timestamp": ts.isoformat(timespec="seconds"),
+            "event": event_type,
+            "provider": self.detector.provider_short() if self.detector else "n/a",
+            "camera_status": self.camera_status,
+        }
+        entry.update(payload)
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    def log_performance_snapshot(self, fps: float):
+        provider = self.detector.provider_short() if self.detector else "n/a"
+        self.log_runtime_event(
+            "performance",
+            fps=round(fps, 2),
+            preview_enabled=self.show_preview,
+            headless=self.headless,
+            overlay_available=self.overlay_available,
+            tray_available=self.tray_available,
+            provider_changed=provider != self.last_perf_log_provider,
+        )
+        self.last_perf_log_provider = provider
+
+    def log_provider_switch(self, previous_provider: str, new_provider: str, reason: str, fps: float):
+        self.log_runtime_event(
+            "provider_switch",
+            previous_provider=previous_provider,
+            new_provider=new_provider,
+            reason=reason,
+            fps=round(fps, 2),
+        )
 
     def export_today_summary(self, icon=None, item=None):
         self.export_daily_summary()
@@ -419,10 +464,11 @@ class PostureApp:
 
     def on_exit(self, icon, item):
         self.running = False
-        if self.overlay: self.overlay.stop()
+        if self.overlay:
+            self.overlay.stop()
         self.export_daily_summary()
-        icon.stop()
-        os._exit(0)
+        if icon is not None:
+            icon.stop()
 
     def toggle_preview(self, icon, item):
         if self.headless:
@@ -446,19 +492,33 @@ class PostureApp:
         print(f"Auto-tune enabled: {self.config.auto_tune_enabled}")
 
     def run_overlay(self):
-        self.overlay = Overlay(self.config.overlay_color)
-        self.overlay.run()
+        try:
+            self.overlay = Overlay(self.config.overlay_color)
+            self.overlay.run()
+        except Exception as e:
+            self.overlay = None
+            self.overlay_available = False
+            print(f"Warning: overlay disabled due to initialization failure: {e}")
+            self.log_runtime_event("overlay_failure", error=str(e))
 
     def run_tray(self):
-        menu = pystray.Menu(pystray.MenuItem("Show/Hide Preview", self.toggle_preview, checked=lambda item: self.show_preview),
-                            pystray.MenuItem("Auto Start", self.toggle_auto_start, checked=lambda item: self.config.auto_start),
-                            pystray.MenuItem("Auto Tune", self.toggle_auto_tune, checked=lambda item: self.config.auto_tune_enabled),
-                            pystray.MenuItem("Calibrate", self.request_calibration),
-                            pystray.MenuItem("Auto-tune Thresholds", self.auto_tune_thresholds),
-                            pystray.MenuItem("Export Daily Summary", self.export_today_summary),
-                            pystray.MenuItem("Exit", self.on_exit))
-        self.icon = pystray.Icon("PostureSentinel", self.create_icon_image(), "Posture Sentinel", menu)
-        self.icon.run()
+        try:
+            menu = pystray.Menu(pystray.MenuItem("Show/Hide Preview", self.toggle_preview, checked=lambda item: self.show_preview),
+                                pystray.MenuItem("Auto Start", self.toggle_auto_start, checked=lambda item: self.config.auto_start),
+                                pystray.MenuItem("Auto Tune", self.toggle_auto_tune, checked=lambda item: self.config.auto_tune_enabled),
+                                pystray.MenuItem("Calibrate", self.request_calibration),
+                                pystray.MenuItem("Auto-tune Thresholds", self.auto_tune_thresholds),
+                                pystray.MenuItem("Export Daily Summary", self.export_today_summary),
+                                pystray.MenuItem("Exit", self.on_exit))
+            self.icon = pystray.Icon("PostureSentinel", self.create_icon_image(), "Posture Sentinel", menu)
+            self.icon.run()
+            return True
+        except Exception as e:
+            self.icon = None
+            self.tray_available = False
+            print(f"Warning: tray disabled due to initialization failure: {e}")
+            self.log_runtime_event("tray_failure", error=str(e))
+            return False
 
     def run_cv(self):
         mp_pose = mp.solutions.pose
@@ -524,13 +584,16 @@ class PostureApp:
             if elapsed_perf >= self.config.performance_window_sec:
                 current_fps = perf_frame_count / max(elapsed_perf, 1e-6)
                 print(f"Performance: {current_fps:.1f} FPS | provider={self.detector.provider_short()}")
+                self.log_performance_snapshot(current_fps)
                 if (
                     self.config.enable_auto_cpu_fallback
                     and not cpu_fallback_done
                     and self.detector.active_provider == "DmlExecutionProvider"
                     and current_fps < self.config.min_fps_before_cpu_fallback
                 ):
+                    previous_provider = self.detector.provider_short()
                     if self.detector.fallback_to_cpu():
+                        self.log_provider_switch(previous_provider, self.detector.provider_short(), "low_fps_auto_fallback", current_fps)
                         cpu_fallback_done = True
                         print(
                             f"Auto fallback: switched to CPU due to low FPS "
@@ -608,20 +671,34 @@ if __name__ == "__main__":
     parser.add_argument("--no-tray", action="store_true", help="Run without system tray icon")
     args = parser.parse_args()
 
-    app = PostureApp(headless=args.headless, no_tray=args.no_tray)
-    cv_thread = threading.Thread(target=app.run_cv, daemon=True)
-    overlay_thread = threading.Thread(target=app.run_overlay, daemon=True)
-    cv_thread.start()
-    overlay_thread.start()
+    try:
+        app = PostureApp(headless=args.headless, no_tray=args.no_tray)
+        cv_thread = threading.Thread(target=app.run_cv, daemon=True)
+        overlay_thread = threading.Thread(target=app.run_overlay, daemon=True)
+        cv_thread.start()
+        overlay_thread.start()
 
-    if args.no_tray:
-        try:
-            while app.running:
-                time.sleep(0.5)
-        except KeyboardInterrupt:
-            app.running = False
-            if app.overlay:
-                app.overlay.stop()
-            app.export_daily_summary()
-    else:
-        app.run_tray()
+        if args.no_tray:
+            try:
+                while app.running:
+                    time.sleep(0.5)
+            except KeyboardInterrupt:
+                app.running = False
+                if app.overlay:
+                    app.overlay.stop()
+                app.export_daily_summary()
+        else:
+            tray_started = app.run_tray()
+            if not tray_started:
+                try:
+                    while app.running:
+                        time.sleep(0.5)
+                except KeyboardInterrupt:
+                    app.running = False
+                    if app.overlay:
+                        app.overlay.stop()
+                    app.export_daily_summary()
+    except AppInitError as e:
+        print(f"Startup failed: {e}")
+        sys.exit(1)
+

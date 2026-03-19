@@ -1,52 +1,33 @@
-# Progress: Posture Sentinel
+﻿# Progress: Posture Sentinel
 
-## Статус проекта: **v0.2 - Все фичи PRD реализованы**
+## Current State
 
-## Режимы работы
+Repository has been prepared for testing, but real execution is blocked by the absence of a working Python runtime in the current environment.
 
-### 1. Калибровка (Calibration)
-- Активируется клавишей **'c'**
-- Сохраняет baseline: плечи, уши, глаза, ear_distance
-- Параметры сохраняются в config.yaml
+## Completed Areas
 
-### 2. Боевой (Monitoring)
-- Мониторинг осанки в реальном времени
-- Детекция нарушений с таймаутом 3 сек
-- Уведомление текстом + размытие экрана
+- Python runtime for posture monitoring exists
+- Tray, overlay, headless, and no-tray modes exist
+- Violation logging and daily summaries exist
+- Perf telemetry and perf summary tooling exist
+- Auto-tuning logic and CLI exist
+- Environment diagnostics exist
+- Setup, run, test, and smoke-test scripts exist
+- Unit tests exist for key non-UI flows
 
-## Что готово (по PRD)
-- ✅ 33 ключевые точки (BlazePose)
-- ✅ Отрисовка скелета
-- ✅ Калибровка (клавиша 'c')
-- ✅ Таймаут 3 секунды до срабатывания
-- ✅ Forward Lean (расстояние между ушами >15%)
-- ✅ Наклон головы по углу (>15°)
-- ✅ **Размытие экрана** (постепенное)
-- ✅ Счетчик FPS
-- ✅ Сохранение config.yaml
+## Known Issues
 
-## Детекция нарушений
-| Тип | Условие |
-|-----|---------|
-| Slouching | Плечи опустились >0.05 |
-| Leaning Forward | Расстояние ушей >15% или уши ниже >0.03 |
-| Head Tilt | Угол отклонения >15° |
-| Head Down | Глаза ниже >0.02 |
-
-## Tech Stack
-| Компонент | Технология |
-|-----------|------------|
-| Язык | Python 3.11+ |
-| CV | opencv-python |
-| ML | MediaPipe |
-| Модель | BlazePose |
+- Current machine cannot execute `python` or `py -3` successfully
+- Full smoke testing and dependency installation remain blocked until Python is fixed on the target machine
+- Final perf tuning still requires real hardware data
 
 ## Changelog
-| Дата | Изменение |
-|------|-----------|
-| 2026-02-13 | Переход на Python (MediaPipe) |
-| 2026-02-13 | Добавлен FPS, детекция плечи/уши/глаза |
-| 2026-02-13 | Таймаут 3с, Forward Lean 15%, угол >15°, размытие |
 
-## Контроль изменений
-last_checked_commit: 50058a5
+| Date | Change |
+|------|--------|
+| 2026-03-13 | Added startup hardening, runtime fallback tests, perf reporting, setup/test automation docs and scripts |
+| 2026-03-19 | Added environment diagnostics, bootstrap/run/test/smoke PowerShell scripts, perf CLI coverage, and updated Memory Bank |
+
+## Change Control
+
+last_checked_commit: f7c9faa02257685d5b36ad92d410f7d39afe2624

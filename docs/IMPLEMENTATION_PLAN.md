@@ -1,34 +1,37 @@
-# План реализации AI Posture Sentinel
+# Implementation Plan: Posture Sentinel
 
-## Фаза 0: Проверка работоспособности (ВЫПОЛНЕНО)
-- [x] Тест камеры ноутбука
-- [x] Тест модели (Переход на MediaPipe)
-- [x] Критерии успеха: FPS >= 20, детекция 33 точек
+## Phase 0: Baseline Validation (Done)
+- [x] Verify webcam access on target Windows machine
+- [x] Validate pose model output for the required landmarks
+- [x] Reach usable realtime posture detection
 
-## Фаза 1: Подготовка окружения (ВЫПОЛНЕНО)
-- [x] Установка зависимостей (Python, MediaPipe, OpenCV)
-- [x] Получение модели (MediaPipe Pose)
+## Phase 1: Core Runtime (Done)
+- [x] Implement config loading and persistence
+- [x] Implement webcam capture and inference loop
+- [x] Implement posture calibration and violation detection
 
-## Фаза 2: Базовая инфраструктура (ВЫПОЛНЕНО)
-- [x] Модуль захвата видео (main.py)
-- [x] Модуль инференса (MediaPipe integration)
-- [x] Модуль конфигурации (config.yaml/json)
+## Phase 2: User Feedback (Done)
+- [x] Add fullscreen blur overlay
+- [x] Add preview window and tray status icon
+- [x] Add manual calibration and preview toggle controls
 
-## Фаза 3: Логика детекции осанки (ВЫПОЛНЕНО)
-- [x] Калибровка (функция calibrate)
-- [x] Детекция нарушений (Сутулость, Наклон вперед, Наклон головы)
-- [x] Таймер нарушения (3 сек)
+## Phase 3: Reliability and Operations (Mostly done)
+- [x] Add camera reconnect handling
+- [x] Add DirectML to CPU fallback logic based on FPS
+- [x] Add headless and no-tray modes
+- [x] Add violation logging and daily summary export
+- [x] Add threshold auto-tuning from local logs
+- [x] Add startup smoke tests for non-UI modules
+- [x] Add explicit handling for tray or overlay initialization failures
 
-## Фаза 4: Система уведомлений и UX (ВЫПОЛНЕНО)
-- [x] Оверлей размытия (полноэкранный с click-through)
-- [x] **Системный трей (pystray)** - работа в фоне
-- [x] Динамическая иконка (цветовая индикация состояния)
-- [ ] Автозапуск (опционально)
+## Phase 4: Validation on Target Hardware (Next)
+- [ ] Profile FPS and stability on the actual workstation GPU using `logs/*.perf.jsonl` and `tools/perf_report.py`
+- [ ] Tune provider fallback thresholds from measured sessions
+- [ ] Review violation and performance log quality after several days of use
 
-## Фаза 5: Оптимизация и GPU (СЛЕДУЮЩИЙ ШАГ)
-- [ ] **GPU Ускорение**: Переход с MediaPipe на ONNX Runtime + DirectML/CUDA (для Quadro P1000)
-- [ ] Обработка отключения камеры
-- [ ] Логирование статистики за день
+## Phase 5: Product Direction (Decision)
+- [ ] Decide whether Python remains the production runtime
+- [ ] If Rust is still desired, create a separate migration plan instead of mixing it into current docs
 
 ---
-*Последнее обновление: 2026-02-17*
+Last updated: 2026-03-13
