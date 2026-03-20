@@ -2,10 +2,12 @@
 
 ## Current Focus
 
-Prepare the repository for immediate testing on a target Windows machine once a working Python 3.10+ interpreter is available.
+Repository Git synchronization is configured for `https://github.com/fromptuo/Posture-Sentinel.git`, and the project remains prepared for immediate testing on a target Windows machine once a working Python 3.10+ interpreter is available.
 
 ## What Was Added Recently
 
+- Git remote `origin` was repointed to `https://github.com/fromptuo/Posture-Sentinel.git`
+- Branch `main` is synced and tracks `origin/main`
 - Environment diagnostics: `environment_checks.py`, `tools/check_env.py`
 - Performance telemetry summaries: `performance_reporting.py`, `tools/perf_report.py`
 - Test automation scripts: `tools/bootstrap.ps1`, `tools/run.ps1`, `tools/run_tests.ps1`, `tools/smoke_test.ps1`

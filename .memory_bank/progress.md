@@ -27,7 +27,8 @@ Repository has been prepared for testing, but real execution is blocked by the a
 |------|--------|
 | 2026-03-13 | Added startup hardening, runtime fallback tests, perf reporting, setup/test automation docs and scripts |
 | 2026-03-19 | Added environment diagnostics, bootstrap/run/test/smoke PowerShell scripts, perf CLI coverage, and updated Memory Bank |
+| 2026-03-20 | Reconfigured Git remote `origin` to `https://github.com/fromptuo/Posture-Sentinel.git`, verified fetch/push, and updated Memory Bank |
 
 ## Change Control
 
-last_checked_commit: f7c9faa02257685d5b36ad92d410f7d39afe2624
+last_checked_commit: 0bed123911c1ddd0251344a76eb6db6697b9267b
