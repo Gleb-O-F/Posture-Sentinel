@@ -38,6 +38,7 @@ Memory Bank is synchronized, the local Windows environment is operational, and t
 | 2026-03-24 | Replaced the local AGENTS file with the upstream version, restored `docs/README.md`, and resynchronized `memory_bank/` with current project state |
 | 2026-03-24 | Fixed runtime-safe logging, made tuning skip empty-signal violations, added bounded smoke execution, validated camera/ONNX startup, and updated project progress to 85% |
 | 2026-03-24 | Collected real perf telemetry on the validated machine, confirmed DirectML auto-fallback to CPU, generated `logs/2026-03-24.perf.summary.json`, and closed project completion to 100% |
+| 2026-03-24 | Added a large `НЕРОВНАЯ ОСАНКА` warning to the overlay and preview when a posture violation is confirmed |
 
 ## Change Control
 

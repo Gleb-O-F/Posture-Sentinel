@@ -96,9 +96,28 @@ class Overlay:
         self.target_alpha = 0.0
         self.current_alpha = 0.0
         self.running = True
+        self.warning_visible = False
+        self.warning_label = None
 
     def set_alpha(self, alpha):
         self.target_alpha = max(0.0, min(0.85, alpha))
+
+    def set_warning_visible(self, visible: bool):
+        self.warning_visible = visible
+        if self.root:
+            try:
+                self.root.after(0, self._apply_warning_state)
+            except tk.TclError:
+                pass
+
+    def _apply_warning_state(self):
+        if not self.warning_label:
+            return
+        if self.warning_visible:
+            self.warning_label.lift()
+            self.warning_label.place(relx=0.5, rely=0.5, anchor="center")
+        else:
+            self.warning_label.place_forget()
 
     def update(self):
         if not self.running or not self.root:
@@ -110,6 +129,7 @@ class Overlay:
                 self.root.attributes("-alpha", self.current_alpha)
             except tk.TclError:
                 pass
+        self._apply_warning_state()
         self.root.after(20, self.update)
 
     def run(self):
@@ -118,6 +138,15 @@ class Overlay:
         self.root.attributes("-topmost", True, "-alpha", 0.0, "-fullscreen", True)
         self.root.config(bg=self.color)
         self.root.overrideredirect(True)
+        self.warning_label = tk.Label(
+            self.root,
+            text="НЕРОВНАЯ ОСАНКА",
+            font=("Arial", 52, "bold"),
+            fg="#C1121F",
+            bg=self.color,
+            padx=48,
+            pady=24,
+        )
         self.root.update()
         hwnd = win32gui.FindWindow(None, "PostureSentinelOverlay")
         if hwnd:
@@ -647,7 +676,10 @@ class PostureApp:
             else:
                 self.blur_intensity = max(0.0, self.blur_intensity - 0.1)
                 self.last_logged_violation = None
-            if self.overlay: self.overlay.set_alpha(self.blur_intensity)
+            warning_visible = violation is not None
+            if self.overlay:
+                self.overlay.set_alpha(self.blur_intensity)
+                self.overlay.set_warning_visible(warning_visible)
             self.update_tray_status(status_color)
             if self.show_preview:
                 if self.blur_intensity > 0:
@@ -656,6 +688,16 @@ class PostureApp:
                     frame = cv2.GaussianBlur(frame, (blur_amt, blur_amt), 0)
                 if self.calibrate_requested: cv2.putText(frame, "CALIBRATING...", (50, 50), 1, 2, (0,255,255), 2)
                 if violation: cv2.putText(frame, f"VIOLATION: {violation[0]}", (50, 100), 1, 1.5, (0,0,255), 2)
+                if warning_visible:
+                    text = "НЕРОВНАЯ ОСАНКА"
+                    font = cv2.FONT_HERSHEY_SIMPLEX
+                    scale = 2.1
+                    thickness = 5
+                    text_size, _ = cv2.getTextSize(text, font, scale, thickness)
+                    text_x = max((frame.shape[1] - text_size[0]) // 2, 20)
+                    text_y = max(frame.shape[0] // 2, text_size[1] + 20)
+                    cv2.putText(frame, text, (text_x + 4, text_y + 4), font, scale, (255, 255, 255), thickness + 2)
+                    cv2.putText(frame, text, (text_x, text_y), font, scale, (0, 0, 255), thickness)
                 cv2.putText(
                     frame,
                     f"Provider: {self.detector.provider_short().upper()} | FPS: {current_fps:.1f}",

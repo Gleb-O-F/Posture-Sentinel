@@ -2,7 +2,7 @@
 
 ## Current Focus
 
-The project has now completed local target-hardware validation on the current Windows machine. The active focus is no longer implementation readiness, but optional follow-up optimization from longer real-world usage data.
+The project has now completed local target-hardware validation on the current Windows machine. The active focus is now incremental UX polish, including stronger on-screen feedback for confirmed posture violations.
 
 ## Current Session Decisions
 

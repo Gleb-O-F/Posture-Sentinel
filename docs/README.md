@@ -11,7 +11,7 @@ Posture Sentinel is a Windows desktop application for local real-time posture mo
 1. `main.py` loads persisted settings from `config.yaml`.
 2. The app opens a webcam stream and runs ONNX pose inference with DirectML preferred and CPU fallback.
 3. Landmark-derived metrics are compared against a saved baseline and configured thresholds.
-4. Confirmed violations raise user feedback through the preview UI, tray state, and a fullscreen blur overlay.
+4. Confirmed violations raise user feedback through the preview UI, tray state, a fullscreen blur overlay, and a large warning label `НЕРОВНАЯ ОСАНКА`.
 5. Runtime events are logged locally for later summaries and threshold tuning.
 
 ### Main modules
