@@ -1,4 +1,4 @@
-﻿# Product Context: Posture Sentinel
+# Product Context: Posture Sentinel
 
 ## User Problem
 
@@ -26,3 +26,4 @@ The immediate goal is to reach a machine-ready state where the project can be sm
 - Local-only processing is required.
 - Python runtime is currently missing or broken in the present environment.
 - Final validation still depends on target hardware testing.
+- Architecture documentation must stay synchronized through `docs/README.md`.
