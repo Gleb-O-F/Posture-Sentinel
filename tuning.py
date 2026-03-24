@@ -92,6 +92,8 @@ def tune_thresholds(config_obj, logs_dir: Path, lookback_days: int = 7, target_e
             continue
         old_value = float(cfg_before[threshold_name])
         events = per_violation_count.get(violation, 0)
+        if events == 0:
+            continue
         avg_per_day = events / max(existing_days, 1)
         ratio = avg_per_day / max(target_events_per_day, 1e-6)
 

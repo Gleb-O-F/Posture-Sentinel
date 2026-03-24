@@ -22,14 +22,14 @@ The current production scope is the Python implementation described in `docs/REA
 | PS-01 | Core runtime for webcam capture, ONNX inference, posture calibration, and violation detection | completed | 20 |
 | PS-02 | User feedback layer with preview UI, tray integration, overlay, headless mode, and no-tray mode | completed | 15 |
 | PS-03 | Local analytics and tuning with violation logs, summaries, perf logs, and tuning/reporting CLIs | completed | 20 |
-| PS-04 | Automated verification and diagnostics with unit tests, fallback coverage, and environment checks | in_progress | 20 |
-| PS-05 | Windows setup and execution automation with bootstrap, run, test, and smoke scripts plus operator docs | in_progress | 10 |
-| PS-06 | End-to-end validation on target hardware with working Python runtime, dependency install, smoke run, and perf review | pending | 15 |
+| PS-04 | Automated verification and diagnostics with unit tests, fallback coverage, and environment checks | completed | 20 |
+| PS-05 | Windows setup and execution automation with bootstrap, run, test, and smoke scripts plus operator docs | completed | 10 |
+| PS-06 | End-to-end validation on target hardware with working Python runtime, dependency install, smoke run, and perf review | completed | 15 |
 
 ## Completion Rule
 
 Project completion percentage must be calculated only from the deliverables table above.
-Current weighted completion: 55% completed, 30% in_progress, 15% pending.
+Current weighted completion: 100% completed, 0% in_progress, 0% pending.
 
 ## Traceability
 

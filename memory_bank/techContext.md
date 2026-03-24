@@ -5,6 +5,7 @@
 - Python 3.10+
 - OpenCV
 - MediaPipe
+- MediaPipe `tasks` package variant may be present without the legacy `solutions` API
 - NumPy
 - ONNX Runtime / ONNX Runtime DirectML
 - Pillow
@@ -33,8 +34,16 @@ Required Python packages are declared in `requirements.txt`.
 
 ## Current Environment Constraint
 
-The repository is structurally ready, but the current workspace still lacks a working Python interpreter for real execution and smoke validation.
+The repository is structurally ready and the current workspace now has a working Python interpreter for execution and smoke validation, but longer real-user sessions are still required for final performance review.
 
 ## Validation Target
 
 A Windows workstation with Python 3.10+, webcam access, required dependencies installed locally, and optional DirectML-capable GPU.
+
+## Latest Validation Result
+
+Current validated machine:
+- Python 3.11.9 in `.venv`
+- Camera check passed on `camera_id=0`
+- DirectML provider initialized but delivered about `0.12 FPS`
+- CPU fallback delivered about `29.54 FPS` and is currently the practical runtime mode on this machine

@@ -462,6 +462,11 @@ class PostureApp:
             self.config.auto_start = desired
             self.config.save()
 
+    def safe_log_runtime_event(self, event_type: str, **payload):
+        logger = getattr(self, "log_runtime_event", None)
+        if callable(logger):
+            logger(event_type, **payload)
+
     def on_exit(self, icon, item):
         self.running = False
         if self.overlay:
@@ -499,7 +504,7 @@ class PostureApp:
             self.overlay = None
             self.overlay_available = False
             print(f"Warning: overlay disabled due to initialization failure: {e}")
-            self.log_runtime_event("overlay_failure", error=str(e))
+            PostureApp.safe_log_runtime_event(self, "overlay_failure", error=str(e))
 
     def run_tray(self):
         try:
@@ -517,12 +522,14 @@ class PostureApp:
             self.icon = None
             self.tray_available = False
             print(f"Warning: tray disabled due to initialization failure: {e}")
-            self.log_runtime_event("tray_failure", error=str(e))
+            PostureApp.safe_log_runtime_event(self, "tray_failure", error=str(e))
             return False
 
     def run_cv(self):
-        mp_pose = mp.solutions.pose
-        drawing = mp.solutions.drawing_utils
+        solutions = getattr(mp, "solutions", None)
+        mp_pose = getattr(solutions, "pose", None) if solutions is not None else None
+        drawing = getattr(solutions, "drawing_utils", None) if solutions is not None else None
+        pose_connections = getattr(mp_pose, "POSE_CONNECTIONS", ()) if mp_pose is not None else ()
         cap = None
         consecutive_read_failures = 0
         last_reconnect_attempt = 0.0
@@ -628,7 +635,9 @@ class PostureApp:
                 # but let's try if it accepts our objects.
                 if self.show_preview:
                     try:
-                        drawing.draw_landmarks(frame, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+                        if drawing is None or not pose_connections:
+                            raise AttributeError("mediapipe drawing utils unavailable")
+                        drawing.draw_landmarks(frame, results.pose_landmarks, pose_connections)
                     except:
                         # Fallback: draw basic points if mp.drawing fails with custom objects
                         h, w, _ = frame.shape
@@ -669,6 +678,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Posture Sentinel")
     parser.add_argument("--headless", action="store_true", help="Run without preview window")
     parser.add_argument("--no-tray", action="store_true", help="Run without system tray icon")
+    parser.add_argument("--smoke-seconds", type=float, default=0.0, help="Stop automatically after the given number of seconds")
     args = parser.parse_args()
 
     try:
@@ -677,27 +687,37 @@ if __name__ == "__main__":
         overlay_thread = threading.Thread(target=app.run_overlay, daemon=True)
         cv_thread.start()
         overlay_thread.start()
+        started_at = time.time()
+
+        def should_stop_for_smoke() -> bool:
+            return args.smoke_seconds > 0 and (time.time() - started_at) >= args.smoke_seconds
+
+        def stop_app():
+            app.running = False
+            if app.overlay:
+                app.overlay.stop()
+            app.export_daily_summary()
 
         if args.no_tray:
             try:
                 while app.running:
+                    if should_stop_for_smoke():
+                        stop_app()
+                        break
                     time.sleep(0.5)
             except KeyboardInterrupt:
-                app.running = False
-                if app.overlay:
-                    app.overlay.stop()
-                app.export_daily_summary()
+                stop_app()
         else:
             tray_started = app.run_tray()
             if not tray_started:
                 try:
                     while app.running:
+                        if should_stop_for_smoke():
+                            stop_app()
+                            break
                         time.sleep(0.5)
                 except KeyboardInterrupt:
-                    app.running = False
-                    if app.overlay:
-                        app.overlay.stop()
-                    app.export_daily_summary()
+                    stop_app()
     except AppInitError as e:
         print(f"Startup failed: {e}")
         sys.exit(1)

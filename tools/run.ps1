@@ -1,8 +1,9 @@
-﻿param(
+param(
     [switch]$Headless,
     [switch]$NoTray,
     [switch]$CheckCamera,
     [int]$CameraId = 0,
+    [double]$SmokeSeconds = 0,
     [string]$VenvDir = '.venv'
 )
 
@@ -73,6 +74,10 @@ if ($Headless) {
 }
 if ($NoTray) {
     $appArgs += '--no-tray'
+}
+if ($SmokeSeconds -gt 0) {
+    $appArgs += '--smoke-seconds'
+    $appArgs += $SmokeSeconds.ToString([System.Globalization.CultureInfo]::InvariantCulture)
 }
 
 Write-Host 'Starting Posture Sentinel'

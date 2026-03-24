@@ -1,6 +1,7 @@
-﻿param(
+param(
     [string]$VenvDir = '.venv',
     [int]$CameraId = 0,
+    [double]$SmokeSeconds = 8,
     [switch]$Headless = $true,
     [switch]$NoTray = $true
 )
@@ -19,6 +20,8 @@ if ($Headless) {
 if ($NoTray) {
     $runArgs += '-NoTray'
 }
+$runArgs += '-SmokeSeconds'
+$runArgs += $SmokeSeconds.ToString([System.Globalization.CultureInfo]::InvariantCulture)
 $runArgs += '-CheckCamera'
 
 powershell @runArgs

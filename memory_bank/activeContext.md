@@ -2,28 +2,29 @@
 
 ## Current Focus
 
-Memory Bank is being synchronized with the current `memory_bank/` path, the architectural source of truth is being restored in `docs/README.md`, and the repository is being prepared for a full commit and push.
+The project has now completed local target-hardware validation on the current Windows machine. The active focus is no longer implementation readiness, but optional follow-up optimization from longer real-world usage data.
 
 ## Current Session Decisions
 
-- Use the upstream `AGENTS.md` from `Ravva/projects-tracker` as the local rule set.
-- Treat `docs/README.md` as the canonical architecture document and align `memory_bank` to it.
-- Preserve the existing project scope: Python runtime is current production, while final validation remains blocked by lack of a working Python runtime on the target machine.
+- Keep `docs/README.md` as the canonical architecture document for Memory Bank synchronization.
+- Treat missing `mediapipe.solutions` as a supported runtime variant and fall back to manual preview-point rendering.
+- Use bounded smoke execution for validation so automation can confirm successful startup without hanging indefinitely.
 
 ## Verified Project State
 
 - Core runtime, overlay, tray, headless mode, summaries, perf reporting, and threshold tuning are implemented.
-- PowerShell bootstrap, run, test, and smoke automation are present under `tools/`.
-- Unit tests and diagnostic tooling exist, but target-hardware validation is still outstanding.
-- Git history currently contains an unfinished migration from `.memory_bank/` to `memory_bank/`.
+- `.venv` bootstrap succeeded and all required runtime dependencies installed successfully.
+- `tools/run_tests.ps1` passes, including environment diagnostics, `unittest`, and CLI smoke checks.
+- `tools/smoke_test.ps1` now completes successfully with camera check, ONNX startup, and bounded shutdown.
+- A bounded runtime produced real `logs/2026-03-24.perf.jsonl` data and `logs/2026-03-24.perf.summary.json`.
+- On this validated machine, DirectML produced about `0.12 FPS` and auto-fell back to CPU, which then ran at about `29.54 FPS`.
 
 ## Immediate Blocker
 
-Successful push still depends on GitHub authentication with write access to `fromptuo/Posture-Sentinel`.
+No delivery blocker remains. Only optional product-level tuning from longer real usage sessions is left.
 
 ## Next Execution Steps
 
-1. Commit the synchronized documentation state, including the `memory_bank/` path.
-2. Push the repository to `origin/main`.
-3. On a healthy Windows machine, run `tools/bootstrap.ps1`, `tools/run_tests.ps1`, and `tools/smoke_test.ps1`.
-4. Review generated runtime and performance logs, then tune thresholds from real sessions.
+1. Optionally collect multi-day violation logs from real use.
+2. Re-run `tools/report.py`, `tools/perf_report.py`, and `tools/tune.py` after more history accumulates.
+3. If CPU remains the only viable provider on this machine, adjust defaults or operator guidance accordingly.
