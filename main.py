@@ -88,13 +88,7 @@ class Config:
         if not set(legacy_map.keys()).issubset(baseline.keys()):
             return baseline
 
-        normalized: Dict[str, float] = {}
-        for legacy_key, new_key in legacy_map.items():
-            try:
-                normalized[new_key] = float(baseline[legacy_key])
-            except (TypeError, ValueError):
-                return None
-        return normalized
+        return None
 
     @classmethod
     def load(cls, path: str = "config.yaml") -> "Config":
@@ -105,7 +99,10 @@ class Config:
                     data = json.load(f)
                 valid_keys = cls.__dataclass_fields__.keys()
                 filtered_data = {k: v for k, v in data.items() if k in valid_keys}
+                raw_baseline = filtered_data.get("baseline")
                 filtered_data["baseline"] = cls.normalize_baseline(filtered_data.get("baseline"))
+                if raw_baseline and filtered_data["baseline"] is None:
+                    print("Legacy baseline detected in config.yaml; recalibration is required.")
                 return cls(**filtered_data)
             except Exception as e:
                 print(f"Warning: failed to load config from {config_path}: {e}")
@@ -522,6 +519,15 @@ class PostureApp:
         if callable(logger):
             logger(event_type, **payload)
 
+    def get_posture_feedback_state(self, violation: Optional[tuple[str, float]]) -> str:
+        if violation is not None:
+            return "bad"
+        if self.analyzer.current_violation:
+            return "pending"
+        if self.analyzer.baseline:
+            return "good"
+        return "uncalibrated"
+
     def on_exit(self, icon, item):
         self.running = False
         if self.overlay:
@@ -702,7 +708,8 @@ class PostureApp:
             else:
                 self.blur_intensity = max(0.0, self.blur_intensity - 0.1)
                 self.last_logged_violation = None
-            warning_visible = violation is not None
+            posture_feedback_state = self.get_posture_feedback_state(violation)
+            warning_visible = posture_feedback_state == "bad"
             if self.overlay:
                 self.overlay.set_alpha(self.blur_intensity)
                 self.overlay.set_warning_visible(warning_visible)
@@ -724,6 +731,26 @@ class PostureApp:
                     text_y = max(frame.shape[0] // 2, text_size[1] + 20)
                     cv2.putText(frame, text, (text_x + 4, text_y + 4), font, scale, (255, 255, 255), thickness + 2)
                     cv2.putText(frame, text, (text_x, text_y), font, scale, (0, 0, 255), thickness)
+                if posture_feedback_state == "good":
+                    text = "ОСАНКА РОВНАЯ"
+                    font = cv2.FONT_HERSHEY_SIMPLEX
+                    scale = 1.8
+                    thickness = 4
+                    text_size, _ = cv2.getTextSize(text, font, scale, thickness)
+                    text_x = max((frame.shape[1] - text_size[0]) // 2, 20)
+                    text_y = max(frame.shape[0] // 2, text_size[1] + 20)
+                    cv2.putText(frame, text, (text_x + 4, text_y + 4), font, scale, (0, 0, 0), thickness + 2)
+                    cv2.putText(frame, text, (text_x, text_y), font, scale, (0, 180, 0), thickness)
+                elif posture_feedback_state == "uncalibrated":
+                    text = "НУЖНА КАЛИБРОВКА (C)"
+                    font = cv2.FONT_HERSHEY_SIMPLEX
+                    scale = 1.3
+                    thickness = 3
+                    text_size, _ = cv2.getTextSize(text, font, scale, thickness)
+                    text_x = max((frame.shape[1] - text_size[0]) // 2, 20)
+                    text_y = max(frame.shape[0] // 2, text_size[1] + 20)
+                    cv2.putText(frame, text, (text_x + 3, text_y + 3), font, scale, (0, 0, 0), thickness + 2)
+                    cv2.putText(frame, text, (text_x, text_y), font, scale, (0, 220, 255), thickness)
                 cv2.putText(
                     frame,
                     f"Provider: {self.detector.provider_short().upper()} | FPS: {current_fps:.1f}",

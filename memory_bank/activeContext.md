@@ -2,7 +2,7 @@
 
 ## Current Focus
 
-The project has now completed local target-hardware validation on the current Windows machine. The active focus is now incremental UX polish, including stronger on-screen feedback for confirmed posture violations.
+The project has now completed local target-hardware validation on the current Windows machine. The active focus is now incremental UX polish, including stronger on-screen feedback for confirmed posture violations and explicit positive-state indication when posture is straight.
 
 ## Current Session Decisions
 

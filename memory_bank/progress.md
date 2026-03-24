@@ -40,6 +40,8 @@ Memory Bank is synchronized, the local Windows environment is operational, and t
 | 2026-03-24 | Collected real perf telemetry on the validated machine, confirmed DirectML auto-fallback to CPU, generated `logs/2026-03-24.perf.summary.json`, and closed project completion to 100% |
 | 2026-03-24 | Added a large `НЕРОВНАЯ ОСАНКА` warning to the overlay and preview when a posture violation is confirmed |
 
+| 2026-03-24 | Added explicit `good/pending/bad` posture feedback states so the preview now visibly indicates when posture is straight |
+
 ## Change Control
 
 last_checked_commit: f66db1c8d4abf5b26469b080c25de0128a472acf

@@ -69,7 +69,20 @@ main = importlib.import_module("main")
 
 
 class MainRuntimeTests(unittest.TestCase):
-    def test_config_load_normalizes_legacy_baseline_shape(self):
+    def test_get_posture_feedback_state_distinguishes_good_and_bad_posture(self):
+        app = SimpleNamespace(analyzer=SimpleNamespace(current_violation=None, baseline={"neck_dist": 1.0}))
+
+        self.assertEqual(main.PostureApp.get_posture_feedback_state(app, ("slouching", 3.2)), "bad")
+        self.assertEqual(main.PostureApp.get_posture_feedback_state(app, None), "good")
+
+        app.analyzer.current_violation = "slouching"
+        self.assertEqual(main.PostureApp.get_posture_feedback_state(app, None), "pending")
+
+        app.analyzer.current_violation = None
+        app.analyzer.baseline = None
+        self.assertEqual(main.PostureApp.get_posture_feedback_state(app, None), "uncalibrated")
+
+    def test_config_load_invalidates_legacy_baseline_shape(self):
         with patch.object(main.Path, "exists", return_value=True), patch.object(
             main, "open", create=True
         ) as mock_open:
@@ -78,15 +91,7 @@ class MainRuntimeTests(unittest.TestCase):
             )
             config = main.Config.load("config.yaml")
 
-        self.assertEqual(
-            config.baseline,
-            {
-                "neck_dist": 1.33,
-                "ear_ratio": 0.41,
-                "width": 0.65,
-                "tilt": 0.05,
-            },
-        )
+        self.assertIsNone(config.baseline)
 
     def test_run_overlay_disables_overlay_after_failure(self):
         app = SimpleNamespace(config=SimpleNamespace(overlay_color="#FFFFFF"), overlay=None, overlay_available=True)
