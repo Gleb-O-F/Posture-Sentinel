@@ -69,6 +69,25 @@ main = importlib.import_module("main")
 
 
 class MainRuntimeTests(unittest.TestCase):
+    def test_config_load_normalizes_legacy_baseline_shape(self):
+        with patch.object(main.Path, "exists", return_value=True), patch.object(
+            main, "open", create=True
+        ) as mock_open:
+            mock_open.return_value.__enter__.return_value.read.return_value = (
+                '{"baseline":{"shoulder_y_norm":1.33,"ear_dist_ratio":0.41,"shoulder_width_base":0.65,"shoulder_tilt_base":0.05}}'
+            )
+            config = main.Config.load("config.yaml")
+
+        self.assertEqual(
+            config.baseline,
+            {
+                "neck_dist": 1.33,
+                "ear_ratio": 0.41,
+                "width": 0.65,
+                "tilt": 0.05,
+            },
+        )
+
     def test_run_overlay_disables_overlay_after_failure(self):
         app = SimpleNamespace(config=SimpleNamespace(overlay_color="#FFFFFF"), overlay=None, overlay_available=True)
 

@@ -71,6 +71,31 @@ class Config:
     auto_tune_lookback_days: int = 7
     auto_tune_target_events_per_day: float = 12.0
 
+    @staticmethod
+    def normalize_baseline(baseline: Optional[Dict[str, float]]) -> Optional[Dict[str, float]]:
+        if not isinstance(baseline, dict):
+            return None
+
+        if {"neck_dist", "ear_ratio", "tilt", "width"}.issubset(baseline.keys()):
+            return baseline
+
+        legacy_map = {
+            "shoulder_y_norm": "neck_dist",
+            "ear_dist_ratio": "ear_ratio",
+            "shoulder_tilt_base": "tilt",
+            "shoulder_width_base": "width",
+        }
+        if not set(legacy_map.keys()).issubset(baseline.keys()):
+            return baseline
+
+        normalized: Dict[str, float] = {}
+        for legacy_key, new_key in legacy_map.items():
+            try:
+                normalized[new_key] = float(baseline[legacy_key])
+            except (TypeError, ValueError):
+                return None
+        return normalized
+
     @classmethod
     def load(cls, path: str = "config.yaml") -> "Config":
         config_path = Path(path)
@@ -80,6 +105,7 @@ class Config:
                     data = json.load(f)
                 valid_keys = cls.__dataclass_fields__.keys()
                 filtered_data = {k: v for k, v in data.items() if k in valid_keys}
+                filtered_data["baseline"] = cls.normalize_baseline(filtered_data.get("baseline"))
                 return cls(**filtered_data)
             except Exception as e:
                 print(f"Warning: failed to load config from {config_path}: {e}")
