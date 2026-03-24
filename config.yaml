@@ -1,0 +1,11 @@
+{
+  "camera_id": 0,
+  "slouch_threshold": 0.05,
+  "lean_threshold": 0.15,
+  "shoulder_tilt_threshold": 0.05,
+  "shoulder_width_threshold": 0.8,
+  "violation_timeout_sec": 3.0,
+  "show_preview": true,
+  "overlay_color": "white",
+  "baseline": {
+    "head_height": 

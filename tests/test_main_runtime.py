@@ -69,6 +69,15 @@ main = importlib.import_module("main")
 
 
 class MainRuntimeTests(unittest.TestCase):
+    def _make_landmarks(self, *, nose_x=0.5, nose_y=0.3, ls=(0.4, 0.6), rs=(0.6, 0.6), le=(0.45, 0.32), re=(0.55, 0.32)):
+        landmarks = [main.Landmark(0.0, 0.0, 0.0) for _ in range(33)]
+        landmarks[0] = main.Landmark(nose_x, nose_y, 0.0)
+        landmarks[7] = main.Landmark(le[0], le[1], 0.0)
+        landmarks[8] = main.Landmark(re[0], re[1], 0.0)
+        landmarks[11] = main.Landmark(ls[0], ls[1], 0.0)
+        landmarks[12] = main.Landmark(rs[0], rs[1], 0.0)
+        return landmarks
+
     def test_get_posture_feedback_state_distinguishes_good_and_bad_posture(self):
         app = SimpleNamespace(analyzer=SimpleNamespace(current_violation=None, baseline={"neck_dist": 1.0}))
 
@@ -92,6 +101,28 @@ class MainRuntimeTests(unittest.TestCase):
             config = main.Config.load("config.yaml")
 
         self.assertIsNone(config.baseline)
+
+    def test_posture_analyzer_treats_calibrated_pose_as_good(self):
+        analyzer = main.PostureAnalyzer()
+        config = main.Config()
+        landmarks = self._make_landmarks()
+
+        analyzer.calibrate(landmarks)
+        self.assertIsNone(analyzer.check(landmarks, config))
+        self.assertIsNone(analyzer.current_violation)
+
+    def test_posture_analyzer_reports_slouch_after_timeout(self):
+        analyzer = main.PostureAnalyzer()
+        config = main.Config(slouch_threshold=0.08, violation_timeout_sec=3.0)
+        good_landmarks = self._make_landmarks()
+        slouch_landmarks = self._make_landmarks(nose_y=0.42, le=(0.45, 0.43), re=(0.55, 0.43))
+
+        analyzer.calibrate(good_landmarks)
+        with patch.object(main.time, "time", side_effect=[10.0, 14.2]):
+            self.assertIsNone(analyzer.check(slouch_landmarks, config))
+            violation = analyzer.check(slouch_landmarks, config)
+
+        self.assertEqual(violation[0], "slouching")
 
     def test_run_overlay_disables_overlay_after_failure(self):
         app = SimpleNamespace(config=SimpleNamespace(overlay_color="#FFFFFF"), overlay=None, overlay_available=True)

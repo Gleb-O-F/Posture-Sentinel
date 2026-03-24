@@ -42,6 +42,8 @@ Memory Bank is synchronized, the local Windows environment is operational, and t
 
 | 2026-03-24 | Added explicit `good/pending/bad` posture feedback states so the preview now visibly indicates when posture is straight |
 
+| 2026-03-24 | Replaced the old single-metric posture detection with a calibrated multi-metric deviation model and reset malformed local config to require fresh calibration |
+
 ## Change Control
 
 last_checked_commit: f66db1c8d4abf5b26469b080c25de0128a472acf

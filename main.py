@@ -77,7 +77,13 @@ class Config:
             return None
 
         if {"neck_dist", "ear_ratio", "tilt", "width"}.issubset(baseline.keys()):
-            return baseline
+            normalized = dict(baseline)
+            try:
+                normalized["head_height"] = float(normalized.get("head_height", normalized["neck_dist"]))
+                normalized["nose_offset"] = float(normalized.get("nose_offset", 0.0))
+            except (TypeError, ValueError):
+                return None
+            return normalized
 
         legacy_map = {
             "shoulder_y_norm": "neck_dist",
@@ -276,45 +282,73 @@ class PostureAnalyzer:
         self.violation_start: Optional[float] = None
         self.current_violation: Optional[str] = None
 
-    def calibrate(self, landmarks):
+    def compute_metrics(self, landmarks) -> Optional[Dict[str, float]]:
         ls, rs, le, re, nose = landmarks[11], landmarks[12], landmarks[7], landmarks[8], landmarks[0]
         width = abs(ls.x - rs.x)
-        if width <= 0: return None
-        # Nose-to-shoulder vertical distance normalized by shoulder width
-        neck_dist = ((ls.y + rs.y) / 2 - nose.y) / width
+        if width <= 0.05:
+            return None
 
-        self.baseline = {
-            "neck_dist": neck_dist,
+        shoulder_mid_x = (ls.x + rs.x) / 2
+        shoulder_mid_y = (ls.y + rs.y) / 2
+        head_height = (shoulder_mid_y - nose.y) / width
+
+        return {
+            "head_height": head_height,
+            "neck_dist": head_height,
             "ear_ratio": abs(le.x - re.x) / width,
             "tilt": (ls.y - rs.y) / width,
-            "width": width
+            "width": width,
+            "nose_offset": abs(nose.x - shoulder_mid_x) / width,
         }
+
+    def calibrate(self, landmarks):
+        metrics = self.compute_metrics(landmarks)
+        if metrics is None:
+            return None
+        self.baseline = metrics
         return self.baseline
 
     def check(self, landmarks, config: Config) -> Optional[tuple[str, float]]:
-        if not self.baseline or "neck_dist" not in self.baseline: return None
+        if not self.baseline:
+            return None
 
-        ls, rs, le, re, nose = landmarks[11], landmarks[12], landmarks[7], landmarks[8], landmarks[0]
-        curr_width = abs(ls.x - rs.x)
-        if curr_width <= 0.05: return None
+        metrics = self.compute_metrics(landmarks)
+        if metrics is None:
+            return None
 
-        curr_neck_dist = ((ls.y + rs.y) / 2 - nose.y) / curr_width
-        curr_ear_ratio = abs(le.x - re.x) / curr_width
-        curr_tilt = (ls.y - rs.y) / curr_width
+        baseline_head_height = float(self.baseline.get("head_height", self.baseline.get("neck_dist", 0.0)))
+        baseline_ear_ratio = float(self.baseline.get("ear_ratio", 0.0))
+        baseline_tilt = float(self.baseline.get("tilt", 0.0))
+        baseline_width = float(self.baseline.get("width", 0.0))
+        baseline_nose_offset = float(self.baseline.get("nose_offset", 0.0))
+        if baseline_width <= 0:
+            return None
 
-        violation = None
-        # 1. Slouching: neck distance shrinks relative to baseline
-        if self.baseline["neck_dist"] - curr_neck_dist > config.slouch_threshold:
-            violation = "slouching"
-        # 2. Forward lean: ear distance grows relative to baseline
-        elif curr_ear_ratio / self.baseline["ear_ratio"] > 1.0 + config.lean_threshold:
-            violation = "leaning_forward"
-        # 3. Shoulder tilt
-        elif abs(curr_tilt - self.baseline["tilt"]) > config.shoulder_tilt_threshold:
-            violation = "shoulder_tilt"
-        # 4. Body rotation
-        elif curr_width / self.baseline["width"] < config.shoulder_width_threshold:
-            violation = "body_rotation"
+        slouch_threshold = max(config.slouch_threshold, 0.08)
+        lean_threshold = max(config.lean_threshold, 0.12)
+        tilt_threshold = max(config.shoulder_tilt_threshold, 0.08)
+        rotation_threshold = max(config.shoulder_width_threshold, 0.72)
+
+        deviation_scores = {
+            "slouching": max(0.0, (baseline_head_height - metrics["head_height"]) / slouch_threshold),
+            "leaning_forward": 0.0,
+            "shoulder_tilt": abs(metrics["tilt"] - baseline_tilt) / tilt_threshold,
+            "body_rotation": max(0.0, (rotation_threshold - (metrics["width"] / baseline_width)) / 0.04),
+        }
+
+        ear_ratio_delta = metrics["ear_ratio"] - baseline_ear_ratio
+        nose_offset_delta = metrics["nose_offset"] - baseline_nose_offset
+        if ear_ratio_delta > 0:
+            deviation_scores["leaning_forward"] = max(
+                0.0,
+                (ear_ratio_delta + max(0.0, nose_offset_delta) * 0.5) / lean_threshold,
+            )
+
+        strongest_violation = max(deviation_scores, key=deviation_scores.get)
+        strongest_score = deviation_scores[strongest_violation]
+        aggregate_score = sum(min(score, 1.5) for score in deviation_scores.values())
+
+        violation = strongest_violation if strongest_score >= 1.0 and aggregate_score >= 1.0 else None
 
         if violation:
             if self.current_violation == violation and self.violation_start:
