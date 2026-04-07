@@ -8,6 +8,10 @@ Posture Sentinel writes runtime telemetry to `logs/YYYY-MM-DD.perf.jsonl`.
 - `provider_switch`: records automatic provider downgrade, for example `dml -> cpu`.
 - `overlay_failure`: emitted when the overlay cannot initialize.
 - `tray_failure`: emitted when the system tray icon cannot initialize.
+- `user_away`: emitted when the app concludes that the user has left the desk.
+- `user_returned`: emitted when the user comes back after an away period.
+- `break_reminder`: emitted when the app suggests taking a short stretch break.
+- `session_summary`: emitted when the session ends and contains state-duration analytics.
 
 ## CLI Usage
 
@@ -39,6 +43,8 @@ The generated summary includes:
 - `fps_by_provider` with `samples`, `avg_fps`, `min_fps`, `max_fps`
 - `provider_switches`
 - `failures`
+- `quality_advice_events`
+- `session_summaries`
 - `malformed_lines`
 
 ## Recommended Profiling Flow

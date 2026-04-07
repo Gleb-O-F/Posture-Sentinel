@@ -76,9 +76,12 @@ class Config:
     bad_posture_enter_score: float = 1.0
     bad_posture_exit_score: float = 0.72
     good_posture_score_threshold: float = 0.45
+    straight_posture_threshold: float = 0.28
     min_tracking_confidence: float = 0.55
     min_calibration_tracking_confidence: float = 0.7
     quality_advice_enabled: bool = True
+    away_timeout_sec: float = 2.5
+    break_reminder_interval_sec: float = 2700.0
 
     @staticmethod
     def normalize_baseline(baseline: Optional[Dict[str, float]]) -> Optional[Dict[str, float]]:
@@ -455,7 +458,10 @@ class PostureAnalyzer:
         posture_score = max(strongest_score, aggregate_score / 2.0)
         enter_score = max(config.bad_posture_enter_score, config.good_posture_score_threshold + 0.15)
         exit_score = min(enter_score - 0.1, max(config.bad_posture_exit_score, config.good_posture_score_threshold + 0.1))
-        good_score_threshold = min(config.good_posture_score_threshold, exit_score - 0.05)
+        straight_score_threshold = max(
+            0.1,
+            min(config.straight_posture_threshold, config.good_posture_score_threshold, exit_score - 0.05),
+        )
         confirmed_violation = None
         started_new_violation = False
         active_elapsed: Optional[float] = None
@@ -488,7 +494,7 @@ class PostureAnalyzer:
                     posture_state = "pending"
             else:
                 posture_state = "pending"
-        elif posture_score > good_score_threshold:
+        elif posture_score > straight_score_threshold:
             posture_state = "pending"
         else:
             posture_state = "good"
@@ -538,6 +544,26 @@ class PostureApp:
         self.last_logged_quality_advice: Optional[str] = None
         self.low_tracking_streak = 0
         self.pending_posture_streak = 0
+        self.break_reminder_message: Optional[str] = None
+        self.break_message_expires_at = 0.0
+        self.no_pose_since: Optional[float] = None
+        self.is_user_away = False
+        self.session_started_at = time.time()
+        self.session_last_state_at = self.session_started_at
+        self.session_state_durations: Dict[str, float] = {
+            "good": 0.0,
+            "pending": 0.0,
+            "bad": 0.0,
+            "tracking_low": 0.0,
+            "uncalibrated": 0.0,
+            "away": 0.0,
+        }
+        self.session_present_seconds = 0.0
+        self.session_away_count = 0
+        self.session_return_count = 0
+        self.session_break_reminders = 0
+        self.last_break_reset_at = self.session_started_at
+        self.last_present_at = self.session_started_at
 
         model_path = Path("models") / "pose_landmarks_detector_full.onnx"
         self.detector = ONNXPoseDetector(model_path)
@@ -693,12 +719,90 @@ class PostureApp:
     def decrease_good_posture_threshold(self, icon=None, item=None):
         self.adjust_good_posture_threshold(-0.05)
 
+    def adjust_straight_posture_threshold(self, delta: float):
+        self.config.straight_posture_threshold = round(
+            max(0.1, min(0.6, self.config.straight_posture_threshold + delta)),
+            2,
+        )
+        self.config.save()
+        print(f"Straight posture threshold: {self.config.straight_posture_threshold:.2f}")
+
+    def increase_straight_posture_threshold(self, icon=None, item=None):
+        self.adjust_straight_posture_threshold(0.03)
+
+    def decrease_straight_posture_threshold(self, icon=None, item=None):
+        self.adjust_straight_posture_threshold(-0.03)
+
     def toggle_quality_advice(self, icon=None, item=None):
         self.config.quality_advice_enabled = not self.config.quality_advice_enabled
         self.config.save()
         if not self.config.quality_advice_enabled:
             self.quality_advice = None
         print(f"Quality advice enabled: {self.config.quality_advice_enabled}")
+
+    def format_violation_reason(self, reason: Optional[str]) -> str:
+        labels = {
+            "slouching": "Slouching",
+            "leaning_forward": "Leaning forward",
+            "shoulder_tilt": "Shoulder tilt",
+            "body_rotation": "Body rotation",
+        }
+        return labels.get(reason or "", "Posture drift")
+
+    def update_presence_state(self, has_pose: bool, now: float) -> bool:
+        if has_pose:
+            if self.is_user_away:
+                self.is_user_away = False
+                self.session_return_count += 1
+                self.last_break_reset_at = now
+                self.log_runtime_event("user_returned")
+            self.no_pose_since = None
+            self.last_present_at = now
+            return False
+
+        if self.no_pose_since is None:
+            self.no_pose_since = now
+            return False
+
+        if not self.is_user_away and (now - self.no_pose_since) >= self.config.away_timeout_sec:
+            self.is_user_away = True
+            self.session_away_count += 1
+            self.last_logged_violation = None
+            self.log_runtime_event("user_away")
+        return self.is_user_away
+
+    def update_session_metrics(self, state: str, now: float):
+        elapsed = max(0.0, now - self.session_last_state_at)
+        if state in self.session_state_durations:
+            self.session_state_durations[state] += elapsed
+        if state != "away":
+            self.session_present_seconds += elapsed
+        self.session_last_state_at = now
+
+    def maybe_emit_break_reminder(self, now: float):
+        if self.is_user_away or self.config.break_reminder_interval_sec <= 0:
+            return
+        if (now - self.last_break_reset_at) < self.config.break_reminder_interval_sec:
+            return
+
+        self.break_reminder_message = "Time for a short stretch break."
+        self.break_message_expires_at = now + 10.0
+        self.last_break_reset_at = now
+        self.session_break_reminders += 1
+        self.log_runtime_event("break_reminder", session_present_minutes=round(self.session_present_seconds / 60.0, 2))
+
+    def get_session_summary(self) -> dict:
+        total_session_sec = max(0.0, time.time() - self.session_started_at)
+        return {
+            "session_minutes": round(total_session_sec / 60.0, 2),
+            "present_minutes": round(self.session_present_seconds / 60.0, 2),
+            "away_count": self.session_away_count,
+            "return_count": self.session_return_count,
+            "break_reminders": self.session_break_reminders,
+            "state_minutes": {
+                key: round(value / 60.0, 2) for key, value in self.session_state_durations.items()
+            },
+        }
 
     def create_icon_image(self, color="green"):
         img = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
@@ -770,7 +874,7 @@ class PostureApp:
         return "uncalibrated"
 
     def update_quality_advice(self, evaluation: Optional[PostureEvaluation]):
-        if not self.config.quality_advice_enabled or evaluation is None:
+        if not self.config.quality_advice_enabled or evaluation is None or getattr(self, "is_user_away", False):
             self.quality_advice = None
             self.low_tracking_streak = 0
             self.pending_posture_streak = 0
@@ -811,6 +915,10 @@ class PostureApp:
             self.last_logged_quality_advice = None
 
     def get_status_message(self, evaluation: Optional[PostureEvaluation]) -> Optional[str]:
+        if self.break_reminder_message and time.time() <= self.break_message_expires_at:
+            return self.break_reminder_message
+        if self.is_user_away:
+            return "Away from desk. Session timer is paused until you return."
         if self.quality_advice:
             return self.quality_advice
         if self.calibrate_requested:
@@ -825,26 +933,29 @@ class PostureApp:
             return "Press C to calibrate while sitting straight."
         if evaluation.posture_state == "good":
             return (
-                f"Good posture detected. Score {evaluation.posture_score:.2f}, "
+                f"Straight posture detected. Score {evaluation.posture_score:.2f}, "
                 f"tracking {evaluation.tracking_score:.2f}."
             )
         if evaluation.posture_state == "pending":
             return (
-                f"Borderline posture. Score {evaluation.posture_score:.2f}, "
+                f"Borderline posture: {self.format_violation_reason(evaluation.strongest_violation)}. Score {evaluation.posture_score:.2f}, "
                 f"tracking {evaluation.tracking_score:.2f}."
             )
         if evaluation.confirmed_violation:
             return (
-                f"Violation: {evaluation.confirmed_violation[0]}. Score {evaluation.posture_score:.2f}, "
+                f"Violation: {self.format_violation_reason(evaluation.confirmed_violation[0])}. Score {evaluation.posture_score:.2f}, "
                 f"tracking {evaluation.tracking_score:.2f}."
             )
         return None
 
     def on_exit(self, icon, item):
+        self.update_session_metrics("away" if self.is_user_away else self.analyzer.current_posture_state, time.time())
+        self.log_runtime_event("session_summary", **self.get_session_summary())
         self.running = False
         if self.overlay:
             self.overlay.stop()
         self.export_daily_summary()
+        self.export_quality_summary()
         if icon is not None:
             icon.stop()
 
@@ -890,6 +1001,8 @@ class PostureApp:
                 pystray.MenuItem("Sensitivity -", self.decrease_posture_sensitivity),
                 pystray.MenuItem("Good Posture +", self.increase_good_posture_threshold),
                 pystray.MenuItem("Good Posture -", self.decrease_good_posture_threshold),
+                pystray.MenuItem("Straight Posture +", self.increase_straight_posture_threshold),
+                pystray.MenuItem("Straight Posture -", self.decrease_straight_posture_threshold),
                 pystray.MenuItem("Calibrate", self.request_calibration),
                 pystray.MenuItem("Auto-tune Thresholds", self.auto_tune_thresholds),
                 pystray.MenuItem("Export Daily Summary", self.export_today_summary),
@@ -992,7 +1105,10 @@ class PostureApp:
             status_color = "green"
             evaluation: Optional[PostureEvaluation] = None
             violation = None
-            if results.pose_landmarks:
+            current_runtime_state = "uncalibrated"
+            has_pose = bool(results.pose_landmarks)
+            user_away = self.update_presence_state(has_pose, now)
+            if has_pose:
                 landmarks = results.pose_landmarks.landmark
                 if self.calibrate_requested:
                     baseline = self.analyzer.calibrate(landmarks, self.config)
@@ -1005,23 +1121,32 @@ class PostureApp:
                         print(self.analyzer.calibration_message or "Calibration skipped.")
                 evaluation = self.analyzer.evaluate(landmarks, self.config)
                 violation = evaluation.confirmed_violation
-                if violation:
+                if user_away:
+                    self.blur_intensity = max(0.0, self.blur_intensity - 0.2)
+                    self.last_logged_violation = None
+                    status_color = "gray"
+                    current_runtime_state = "away"
+                elif violation:
                     status_color = "red"
                     self.blur_intensity = min(1.0, self.blur_intensity + 0.08)
                     if self.last_logged_violation != violation[0]:
                         self.log_violation(violation[0], violation[1], evaluation)
                         self.last_logged_violation = violation[0]
+                    current_runtime_state = "bad"
                 elif evaluation.posture_state == "pending":
                     status_color = "orange"
                     self.blur_intensity = max(0.0, self.blur_intensity - 0.08)
                     self.last_logged_violation = None
+                    current_runtime_state = "pending"
                 elif evaluation.posture_state == "tracking_low":
                     status_color = "gray"
                     self.blur_intensity = max(0.0, self.blur_intensity - 0.15)
                     self.last_logged_violation = None
+                    current_runtime_state = "tracking_low"
                 else:
                     self.blur_intensity = max(0.0, self.blur_intensity - 0.25)
                     self.last_logged_violation = None
+                    current_runtime_state = evaluation.posture_state
 
                 # Drawing landmarks - since we use custom Landmark class, we need a small adaptation
                 # but mp drawing_utils usually expects proto objects.
@@ -1040,10 +1165,15 @@ class PostureApp:
                             cv2.circle(frame, (cx, cy), 2, (0, 255, 0), -1)
             else:
                 self.analyzer.current_tracking_score = 0.0
-                self.analyzer.current_posture_state = "tracking_low" if self.analyzer.baseline else "uncalibrated"
+                self.analyzer.current_posture_state = "away" if user_away else ("tracking_low" if self.analyzer.baseline else "uncalibrated")
                 self.blur_intensity = max(0.0, self.blur_intensity - 0.1)
                 self.last_logged_violation = None
-            posture_feedback_state = self.get_posture_feedback_state(evaluation)
+                current_runtime_state = self.analyzer.current_posture_state
+
+            self.update_session_metrics(current_runtime_state, now)
+            self.maybe_emit_break_reminder(now)
+
+            posture_feedback_state = "away" if user_away else self.get_posture_feedback_state(evaluation)
             self.update_quality_advice(evaluation)
             self.status_message = self.get_status_message(evaluation)
             warning_visible = posture_feedback_state == "bad"
@@ -1100,6 +1230,16 @@ class PostureApp:
                     text_y = max(frame.shape[0] // 2, text_size[1] + 20)
                     cv2.putText(frame, text, (text_x + 3, text_y + 3), font, scale, (0, 0, 0), thickness + 2)
                     cv2.putText(frame, text, (text_x, text_y), font, scale, (0, 220, 255), thickness)
+                elif posture_feedback_state == "away":
+                    text = "AWAY FROM DESK"
+                    font = cv2.FONT_HERSHEY_SIMPLEX
+                    scale = 1.4
+                    thickness = 3
+                    text_size, _ = cv2.getTextSize(text, font, scale, thickness)
+                    text_x = max((frame.shape[1] - text_size[0]) // 2, 20)
+                    text_y = max(frame.shape[0] // 2, text_size[1] + 20)
+                    cv2.putText(frame, text, (text_x + 3, text_y + 3), font, scale, (0, 0, 0), thickness + 2)
+                    cv2.putText(frame, text, (text_x, text_y), font, scale, (180, 180, 180), thickness)
                 elif posture_feedback_state == "pending":
                     text = "ADJUST YOUR POSTURE"
                     font = cv2.FONT_HERSHEY_SIMPLEX
@@ -1110,6 +1250,16 @@ class PostureApp:
                     text_y = max(frame.shape[0] // 2, text_size[1] + 20)
                     cv2.putText(frame, text, (text_x + 3, text_y + 3), font, scale, (0, 0, 0), thickness + 2)
                     cv2.putText(frame, text, (text_x, text_y), font, scale, (0, 180, 255), thickness)
+                if evaluation and evaluation.strongest_violation and posture_feedback_state in {"pending", "bad"}:
+                    cv2.putText(
+                        frame,
+                        f"Reason: {self.format_violation_reason(evaluation.strongest_violation)}",
+                        (20, 60),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6,
+                        (255, 255, 255),
+                        2
+                    )
                 if self.status_message:
                     cv2.putText(
                         frame,
@@ -1120,6 +1270,19 @@ class PostureApp:
                         (255, 255, 255),
                         2
                     )
+                session_summary = self.get_session_summary()
+                cv2.putText(
+                    frame,
+                    (
+                        f"Session: {session_summary['session_minutes']:.1f}m | Present: {session_summary['present_minutes']:.1f}m | "
+                        f"Breaks: {session_summary['break_reminders']} | Away: {session_summary['away_count']}"
+                    ),
+                    (20, frame.shape[0] - 25),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55,
+                    (255, 255, 255),
+                    2
+                )
                 cv2.putText(
                     frame,
                     (
@@ -1161,10 +1324,13 @@ if __name__ == "__main__":
             return args.smoke_seconds > 0 and (time.time() - started_at) >= args.smoke_seconds
 
         def stop_app():
+            app.update_session_metrics("away" if app.is_user_away else app.analyzer.current_posture_state, time.time())
+            app.log_runtime_event("session_summary", **app.get_session_summary())
             app.running = False
             if app.overlay:
                 app.overlay.stop()
             app.export_daily_summary()
+            app.export_quality_summary()
 
         if args.no_tray:
             try:

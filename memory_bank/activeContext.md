@@ -2,7 +2,7 @@
 
 ## Current Focus
 
-The project has completed the active quality pass over posture recognition UX on the current Windows machine. The runtime now includes metric smoothing and hysteresis for stable classification, calibration quality gates, tracking-quality feedback, posture sensitivity settings, enriched analytics, and an explicit posture-accuracy control so the app better distinguishes straight posture from borderline poses.
+The product-level ergonomics pass is now implemented on top of the completed posture-quality work. The runtime now supports away/return awareness, break reminders, session analytics, more specific feedback reasons, and an additional operator-facing control for how strictly the app decides whether posture is truly straight or only borderline.
 
 ## Current Session Decisions
 
@@ -13,6 +13,8 @@ The project has completed the active quality pass over posture recognition UX on
 - Keep the implementation local-first and config-driven so users can tune sensitivity without touching core code.
 - Treat the new posture-quality pass as confirmed project scope and track it as a dedicated deliverable in `memory_bank/projectbrief.md`.
 - Prefer stricter calibration quality gates over permissive baseline capture so the "good posture" state is more trustworthy after setup.
+- Treat the new ergonomics-assistant layer as confirmed project scope and track it as a dedicated deliverable in `memory_bank/projectbrief.md`.
+- Prefer user-facing usefulness over raw detector cleverness: reminders, away detection, and session context should reduce false pressure on the user.
 
 ## Verified Project State
 
@@ -25,10 +27,10 @@ The project has completed the active quality pass over posture recognition UX on
 
 ## Immediate Blocker
 
-No delivery blocker is currently present. The remaining work is optional tuning from longer real-world usage sessions rather than missing implementation.
+No hard delivery blocker is present. The remaining work is now iterative tuning from real-world use rather than missing ergonomics-assistant functionality.
 
 ## Next Execution Steps
 
-1. Collect several days of real usage logs with the new posture score and tracking score fields.
-2. Review the new `tools/quality_report.py` output and runtime quality advice to see whether the default sensitivity and good-posture threshold need machine-specific tuning.
-3. If users still see borderline misclassification, refine the posture score formula using the richer telemetry now written to logs.
+1. Collect real usage logs to tune the default straight-posture threshold and break-reminder cadence.
+2. Review whether away detection should also consider very low-confidence partial landmarks, not only full pose absence.
+3. Consider adding historical session trends to the existing reports once enough session-summary data accumulates.

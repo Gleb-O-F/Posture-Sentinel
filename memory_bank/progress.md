@@ -6,6 +6,8 @@ Memory Bank is synchronized, the local Windows environment is operational, and t
 
 As of 2026-04-07, the confirmed posture-quality scope extension has been implemented: recognition is now stabilized with smoothing and hysteresis, calibration is gated by tracking quality, posture accuracy is configurable, and analytics include richer posture-state telemetry.
 
+As of 2026-04-07, the ergonomics-assistant scope extension is also implemented: away/return awareness, break reminders, richer session analytics, more specific feedback reasons, and stricter user-facing control over what counts as truly straight posture.
+
 ## Completed Areas
 
 - Python runtime for posture monitoring exists
@@ -52,7 +54,9 @@ As of 2026-04-07, the confirmed posture-quality scope extension has been impleme
 | 2026-04-07 | Added a dedicated posture-quality reporting pipeline and CLI to summarize posture score, tracking score, and posture-state distribution from daily logs |
 | 2026-04-07 | Added tray-based quality controls, runtime auto-advice for weak tracking and borderline posture, and recommendation output in the quality report |
 | 2026-04-07 | Added tray export for quality summaries and runtime telemetry for emitted quality advice so operator guidance can be audited later |
+| 2026-04-07 | Started an ergonomics-assistant pass for away/return detection, break reminders, session analytics, reason-specific feedback, and stricter straight-posture tuning |
+| 2026-04-07 | Added away/return detection, break reminders, session analytics, reason-specific feedback messaging, and a stricter straight-posture threshold with runtime and summary coverage |
 
 ## Change Control
 
-last_checked_commit: 05e18fe9edd69bb735504d523bbe691709323af4
+last_checked_commit: 44230093fbead3162bdd9b39e696b6c2a628bdc4

@@ -15,7 +15,7 @@
 
 ## Important Files
 
-- `main.py`: runtime, inference, smoothed posture scoring, calibration quality gating, tray quality controls, UI orchestration, logging
+- `main.py`: runtime, inference, smoothed posture scoring, away detection, break reminders, session analytics, tray quality controls, UI orchestration, logging
 - `reporting.py`: violation aggregation and summary serialization
 - `performance_reporting.py`: performance telemetry aggregation
 - `posture_quality_reporting.py`: posture score and tracking quality aggregation

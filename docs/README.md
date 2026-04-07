@@ -11,16 +11,18 @@ Posture Sentinel is a Windows desktop application for local real-time posture mo
 1. `main.py` loads persisted settings from `config.yaml`.
 2. The app opens a webcam stream and runs ONNX pose inference with DirectML preferred and CPU fallback.
 3. Landmark-derived metrics are smoothed, checked for tracking quality, and compared against a saved baseline and configured thresholds.
-4. A posture score and hysteresis-driven state machine distinguish `good`, `pending`, `bad`, `tracking_low`, and `uncalibrated` states, using an explicit posture-accuracy threshold to better recognize straight posture.
-5. Confirmed violations raise user feedback through the preview UI, tray state, a fullscreen blur overlay, and a large warning label `НЕРОВНАЯ ОСАНКА`.
-6. The tray menu exposes quick quality controls for posture sensitivity, straight-posture strictness, and quality-advice toggling.
-7. Runtime events are logged locally for later summaries and threshold tuning, including richer quality and posture-state metadata.
+4. A posture score and hysteresis-driven state machine distinguish `good`, `pending`, `bad`, `tracking_low`, `away`, and `uncalibrated` states, using explicit thresholds to separate truly straight posture from merely acceptable posture.
+5. Confirmed violations raise user feedback through the preview UI, tray state, a fullscreen blur overlay, and a large warning label `НЕРОВНАЯ ОСАНКА`, while pending states surface a more specific reason such as slouching or leaning forward.
+6. The runtime detects when the user leaves and returns to the desk so absence is not treated as posture failure.
+7. Break reminders and lightweight session analytics help the app behave like an ergonomics assistant rather than only a detector.
+8. The tray menu exposes quick controls for posture sensitivity, straight-posture strictness, and quality-advice toggling.
+9. Runtime events are logged locally for later summaries and threshold tuning, including richer quality, session, reminder, and posture-state metadata.
 
 ### Main modules
 
 | Module | Responsibility |
 |--------|----------------|
-| `main.py` | Application bootstrap, camera loop, ONNX session management, posture calibration, violation detection, tray and overlay orchestration |
+| `main.py` | Application bootstrap, camera loop, ONNX session management, posture calibration, session-aware posture detection, reminders, tray and overlay orchestration |
 | `reporting.py` | Aggregates daily and date-range violation logs into JSON summaries |
 | `performance_reporting.py` | Aggregates performance telemetry, provider switches, FPS, and failures |
 | `posture_quality_reporting.py` | Aggregates posture score, tracking score, and posture-state quality summaries from violation logs |
@@ -38,7 +40,7 @@ Posture Sentinel is a Windows desktop application for local real-time posture mo
 - Violation events are written to `logs/YYYY-MM-DD.jsonl`.
 - Daily violation summaries are written to `logs/YYYY-MM-DD.summary.json`.
 - Performance telemetry is written to `logs/YYYY-MM-DD.perf.jsonl`.
-- Calibration quality, posture score, tracking score, and posture-state metadata are persisted in runtime logs for diagnostics.
+- Calibration quality, posture score, tracking score, posture-state metadata, quality advice, and session summary events are persisted in runtime logs for diagnostics.
 
 ## Verification and operations
 

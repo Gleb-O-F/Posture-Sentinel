@@ -4,10 +4,11 @@
 
 - `main.py` owns application bootstrap, camera capture, provider selection, calibration state, violation detection, and desktop UX orchestration.
 - Pose inference runs through ONNX Runtime with `DmlExecutionProvider` preferred and `CPUExecutionProvider` as explicit fallback.
-- Posture decisions compare smoothed landmark metrics against a persisted baseline in `config.yaml`, then use posture-score thresholds plus hysteresis to stabilize transitions between `good`, `pending`, `bad`, and `tracking_low`.
+- Posture decisions compare smoothed landmark metrics against a persisted baseline in `config.yaml`, then use posture-score thresholds plus hysteresis to stabilize transitions between `good`, `pending`, `bad`, `tracking_low`, and `away`.
 - Soft feedback is layered through preview rendering, tray state, and a click-through fullscreen overlay.
 - Preview rendering falls back to manual landmark-point drawing when the installed `mediapipe` package does not expose the legacy `solutions` helpers.
 - Calibration now depends on minimum tracking quality so low-confidence frames do not establish a misleading baseline.
+- Away detection pauses posture pressure when no person is reliably present, and a session timer tracks away/return transitions plus break reminders.
 
 ## Data Flow Patterns
 
@@ -17,6 +18,7 @@
 - A dedicated posture-quality CLI summarizes state distribution and score quality from existing violation logs without needing separate runtime instrumentation.
 - The tray menu now doubles as a lightweight operator console for quality tuning and advice toggling, avoiding direct edits to `config.yaml` during normal use.
 - Runtime quality advice is also written to performance telemetry so later analysis can compare recommendations against operator outcomes.
+- Session summaries are emitted into performance telemetry on shutdown so later analysis can review time at desk, away counts, break reminders, and state durations.
 - Threshold tuning reads recent log history, applies bounded adjustments, and writes updated runtime configuration locally.
 
 ## Resilience Patterns

@@ -34,6 +34,8 @@ def build_perf_summary(entries: Iterable[dict], malformed_lines: int, label: str
     fps_by_provider: Dict[str, dict] = {}
     provider_switches: list[dict] = []
     failures: list[dict] = []
+    quality_advice_events: list[dict] = []
+    session_summaries: list[dict] = []
     first_ts: Optional[str] = None
     last_ts: Optional[str] = None
 
@@ -84,6 +86,27 @@ def build_perf_summary(entries: Iterable[dict], malformed_lines: int, label: str
                 }
             )
 
+        if event_type == "quality_advice":
+            quality_advice_events.append(
+                {
+                    "timestamp": timestamp,
+                    "advice": item.get("advice"),
+                }
+            )
+
+        if event_type == "session_summary":
+            session_summaries.append(
+                {
+                    "timestamp": timestamp,
+                    "session_minutes": item.get("session_minutes"),
+                    "present_minutes": item.get("present_minutes"),
+                    "away_count": item.get("away_count"),
+                    "return_count": item.get("return_count"),
+                    "break_reminders": item.get("break_reminders"),
+                    "state_minutes": item.get("state_minutes"),
+                }
+            )
+
     fps_summary: Dict[str, dict] = {}
     for provider, stats in fps_by_provider.items():
         samples = int(stats["samples"])
@@ -108,6 +131,8 @@ def build_perf_summary(entries: Iterable[dict], malformed_lines: int, label: str
         "fps_by_provider": fps_summary,
         "provider_switches": provider_switches,
         "failures": failures,
+        "quality_advice_events": quality_advice_events,
+        "session_summaries": session_summaries,
         "malformed_lines": malformed_lines,
     }
 

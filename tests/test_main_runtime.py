@@ -200,6 +200,16 @@ class MainRuntimeTests(unittest.TestCase):
         self.assertEqual(app.config.posture_sensitivity, 1.5)
         self.assertEqual(len(saves), 1)
 
+    def test_adjust_straight_posture_threshold_clamps_and_saves(self):
+        saves = []
+        app = SimpleNamespace(config=main.Config(straight_posture_threshold=0.58))
+        app.config.save = lambda: saves.append(app.config.straight_posture_threshold)
+
+        main.PostureApp.adjust_straight_posture_threshold(app, 0.1)
+
+        self.assertEqual(app.config.straight_posture_threshold, 0.6)
+        self.assertEqual(len(saves), 1)
+
     def test_update_quality_advice_logs_new_advice_once(self):
         logged = []
         app = SimpleNamespace(
@@ -230,6 +240,48 @@ class MainRuntimeTests(unittest.TestCase):
         build_mock.assert_called_once()
         write_mock.assert_called_once()
 
+    def test_update_presence_state_marks_away_and_return(self):
+        events = []
+        app = SimpleNamespace(
+            config=main.Config(away_timeout_sec=2.0),
+            is_user_away=False,
+            no_pose_since=None,
+            session_away_count=0,
+            session_return_count=0,
+            last_logged_violation=None,
+            last_break_reset_at=0.0,
+            last_present_at=0.0,
+            log_runtime_event=lambda event, **payload: events.append(event),
+        )
+
+        self.assertFalse(main.PostureApp.update_presence_state(app, False, 10.0))
+        self.assertTrue(main.PostureApp.update_presence_state(app, False, 12.5))
+        self.assertTrue(app.is_user_away)
+        self.assertIn("user_away", events)
+
+        self.assertFalse(main.PostureApp.update_presence_state(app, True, 13.0))
+        self.assertFalse(app.is_user_away)
+        self.assertIn("user_returned", events)
+
+    def test_maybe_emit_break_reminder_logs_event(self):
+        events = []
+        app = SimpleNamespace(
+            config=main.Config(break_reminder_interval_sec=60.0),
+            is_user_away=False,
+            last_break_reset_at=0.0,
+            session_present_seconds=3600.0,
+            break_reminder_message=None,
+            break_message_expires_at=0.0,
+            session_break_reminders=0,
+            log_runtime_event=lambda event, **payload: events.append((event, payload)),
+        )
+
+        main.PostureApp.maybe_emit_break_reminder(app, 61.0)
+
+        self.assertEqual(app.session_break_reminders, 1)
+        self.assertEqual(events[0][0], "break_reminder")
+        self.assertIn("stretch break", app.break_reminder_message)
+
     def test_run_overlay_disables_overlay_after_failure(self):
         app = SimpleNamespace(config=SimpleNamespace(overlay_color="#FFFFFF"), overlay=None, overlay_available=True)
 
@@ -256,6 +308,8 @@ class MainRuntimeTests(unittest.TestCase):
             decrease_posture_sensitivity=lambda *args, **kwargs: None,
             increase_good_posture_threshold=lambda *args, **kwargs: None,
             decrease_good_posture_threshold=lambda *args, **kwargs: None,
+            increase_straight_posture_threshold=lambda *args, **kwargs: None,
+            decrease_straight_posture_threshold=lambda *args, **kwargs: None,
             request_calibration=lambda *args, **kwargs: None,
             auto_tune_thresholds=lambda *args, **kwargs: None,
             export_today_summary=lambda *args, **kwargs: None,
@@ -298,6 +352,8 @@ class MainRuntimeTests(unittest.TestCase):
             decrease_posture_sensitivity=lambda *args, **kwargs: None,
             increase_good_posture_threshold=lambda *args, **kwargs: None,
             decrease_good_posture_threshold=lambda *args, **kwargs: None,
+            increase_straight_posture_threshold=lambda *args, **kwargs: None,
+            decrease_straight_posture_threshold=lambda *args, **kwargs: None,
             request_calibration=lambda *args, **kwargs: None,
             auto_tune_thresholds=lambda *args, **kwargs: None,
             export_today_summary=lambda *args, **kwargs: None,
