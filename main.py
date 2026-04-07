@@ -2,7 +2,7 @@ import cv2
 import mediapipe as mp
 import numpy as np
 import onnxruntime as ort
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, Dict
 from pathlib import Path
 import time
@@ -19,6 +19,7 @@ import ctypes
 import argparse
 from datetime import datetime
 from reporting import build_daily_summary, write_summary_file
+from posture_quality_reporting import build_daily_quality_summary, write_quality_summary_file
 from tuning import tune_thresholds
 
 class AppInitError(RuntimeError):
@@ -70,6 +71,14 @@ class Config:
     auto_tune_enabled: bool = True
     auto_tune_lookback_days: int = 7
     auto_tune_target_events_per_day: float = 12.0
+    posture_sensitivity: float = 1.0
+    metric_smoothing_alpha: float = 0.35
+    bad_posture_enter_score: float = 1.0
+    bad_posture_exit_score: float = 0.72
+    good_posture_score_threshold: float = 0.45
+    min_tracking_confidence: float = 0.55
+    min_calibration_tracking_confidence: float = 0.7
+    quality_advice_enabled: bool = True
 
     @staticmethod
     def normalize_baseline(baseline: Optional[Dict[str, float]]) -> Optional[Dict[str, float]]:
@@ -200,6 +209,20 @@ class Landmark:
         self.visibility = visibility
         self.presence = presence
 
+
+@dataclass
+class PostureEvaluation:
+    posture_state: str
+    posture_score: float = 0.0
+    tracking_score: float = 0.0
+    strongest_violation: Optional[str] = None
+    strongest_score: float = 0.0
+    deviation_scores: Dict[str, float] = field(default_factory=dict)
+    confirmed_violation: Optional[tuple[str, float]] = None
+    calibration_allowed: bool = False
+    calibration_reason: Optional[str] = None
+    metrics: Optional[Dict[str, float]] = None
+
 class ONNXPoseDetector:
     def __init__(self, model_path):
         self.model_path = model_path
@@ -281,6 +304,11 @@ class PostureAnalyzer:
         self.baseline = baseline
         self.violation_start: Optional[float] = None
         self.current_violation: Optional[str] = None
+        self.smoothed_metrics: Optional[Dict[str, float]] = None
+        self.current_posture_score: float = 0.0
+        self.current_tracking_score: float = 0.0
+        self.current_posture_state: str = "uncalibrated"
+        self.calibration_message: Optional[str] = None
 
     def compute_metrics(self, landmarks) -> Optional[Dict[str, float]]:
         ls, rs, le, re, nose = landmarks[11], landmarks[12], landmarks[7], landmarks[8], landmarks[0]
@@ -301,20 +329,95 @@ class PostureAnalyzer:
             "nose_offset": abs(nose.x - shoulder_mid_x) / width,
         }
 
-    def calibrate(self, landmarks):
+    def compute_tracking_score(self, landmarks) -> float:
+        key_indices = (0, 7, 8, 11, 12)
+        scores = []
+        for index in key_indices:
+            point = landmarks[index]
+            visibility = 1.0 if point.visibility is None else float(point.visibility)
+            presence = visibility if point.presence is None else float(point.presence)
+            scores.append(max(0.0, min(1.0, min(visibility, presence))))
+        if not scores:
+            return 0.0
+        return sum(scores) / len(scores)
+
+    def smooth_metrics(self, metrics: Dict[str, float], alpha: float) -> Dict[str, float]:
+        alpha = max(0.05, min(1.0, alpha))
+        if self.smoothed_metrics is None:
+            self.smoothed_metrics = dict(metrics)
+            return dict(metrics)
+
+        smoothed = {}
+        for key, value in metrics.items():
+            previous = self.smoothed_metrics.get(key, value)
+            smoothed[key] = previous + alpha * (value - previous)
+        self.smoothed_metrics = smoothed
+        return smoothed
+
+    def reset_violation_state(self):
+        self.current_violation = None
+        self.violation_start = None
+
+    def calibrate(self, landmarks, config: Config) -> Optional[Dict[str, float]]:
         metrics = self.compute_metrics(landmarks)
+        tracking_score = self.compute_tracking_score(landmarks)
         if metrics is None:
+            self.calibration_message = "Move closer to the camera and keep shoulders visible."
+            return None
+        if tracking_score < config.min_calibration_tracking_confidence:
+            self.calibration_message = "Tracking quality is too low for calibration."
             return None
         self.baseline = metrics
+        self.smoothed_metrics = dict(metrics)
+        self.current_posture_score = 0.0
+        self.current_tracking_score = tracking_score
+        self.current_posture_state = "good"
+        self.calibration_message = "Calibration captured successfully."
+        self.reset_violation_state()
         return self.baseline
 
-    def check(self, landmarks, config: Config) -> Optional[tuple[str, float]]:
+    def evaluate(self, landmarks, config: Config) -> PostureEvaluation:
+        tracking_score = self.compute_tracking_score(landmarks)
+        self.current_tracking_score = tracking_score
+
         if not self.baseline:
-            return None
+            self.current_posture_state = "uncalibrated"
+            self.current_posture_score = 0.0
+            self.reset_violation_state()
+            return PostureEvaluation(
+                posture_state="uncalibrated",
+                tracking_score=tracking_score,
+                calibration_allowed=tracking_score >= config.min_calibration_tracking_confidence,
+                calibration_reason="Press C while sitting straight to calibrate.",
+            )
 
         metrics = self.compute_metrics(landmarks)
         if metrics is None:
-            return None
+            self.current_posture_state = "tracking_low"
+            self.current_posture_score = 0.0
+            self.reset_violation_state()
+            return PostureEvaluation(
+                posture_state="tracking_low",
+                tracking_score=tracking_score,
+                calibration_allowed=False,
+                calibration_reason="Keep your shoulders and head fully in frame.",
+            )
+
+        if tracking_score < config.min_tracking_confidence:
+            self.current_posture_state = "tracking_low"
+            self.current_posture_score = 0.0
+            self.reset_violation_state()
+            return PostureEvaluation(
+                posture_state="tracking_low",
+                tracking_score=tracking_score,
+                calibration_allowed=False,
+                calibration_reason="Tracking quality is low. Face the camera and sit still.",
+                metrics=metrics,
+            )
+
+        metrics = self.smooth_metrics(metrics, config.metric_smoothing_alpha)
+        if not self.baseline:
+            return PostureEvaluation(posture_state="uncalibrated", tracking_score=tracking_score)
 
         baseline_head_height = float(self.baseline.get("head_height", self.baseline.get("neck_dist", 0.0)))
         baseline_ear_ratio = float(self.baseline.get("ear_ratio", 0.0))
@@ -322,12 +425,14 @@ class PostureAnalyzer:
         baseline_width = float(self.baseline.get("width", 0.0))
         baseline_nose_offset = float(self.baseline.get("nose_offset", 0.0))
         if baseline_width <= 0:
-            return None
+            self.current_posture_state = "uncalibrated"
+            return PostureEvaluation(posture_state="uncalibrated", tracking_score=tracking_score, metrics=metrics)
 
-        slouch_threshold = max(config.slouch_threshold, 0.08)
-        lean_threshold = max(config.lean_threshold, 0.12)
-        tilt_threshold = max(config.shoulder_tilt_threshold, 0.08)
-        rotation_threshold = max(config.shoulder_width_threshold, 0.72)
+        sensitivity = max(0.65, min(1.5, config.posture_sensitivity))
+        slouch_threshold = max(config.slouch_threshold / sensitivity, 0.08)
+        lean_threshold = max(config.lean_threshold / sensitivity, 0.12)
+        tilt_threshold = max(config.shoulder_tilt_threshold / sensitivity, 0.08)
+        rotation_threshold = max(config.shoulder_width_threshold - ((sensitivity - 1.0) * 0.08), 0.72)
 
         deviation_scores = {
             "slouching": max(0.0, (baseline_head_height - metrics["head_height"]) / slouch_threshold),
@@ -347,20 +452,65 @@ class PostureAnalyzer:
         strongest_violation = max(deviation_scores, key=deviation_scores.get)
         strongest_score = deviation_scores[strongest_violation]
         aggregate_score = sum(min(score, 1.5) for score in deviation_scores.values())
+        posture_score = max(strongest_score, aggregate_score / 2.0)
+        enter_score = max(config.bad_posture_enter_score, config.good_posture_score_threshold + 0.15)
+        exit_score = min(enter_score - 0.1, max(config.bad_posture_exit_score, config.good_posture_score_threshold + 0.1))
+        good_score_threshold = min(config.good_posture_score_threshold, exit_score - 0.05)
+        confirmed_violation = None
+        started_new_violation = False
+        active_elapsed: Optional[float] = None
 
-        violation = strongest_violation if strongest_score >= 1.0 and aggregate_score >= 1.0 else None
-
-        if violation:
-            if self.current_violation == violation and self.violation_start:
-                elapsed = time.time() - self.violation_start
-                if elapsed >= config.violation_timeout_sec: return (violation, elapsed)
+        if self.current_violation:
+            active_score = deviation_scores.get(self.current_violation, strongest_score)
+            if active_score >= exit_score or posture_score >= exit_score:
+                if self.violation_start:
+                    active_elapsed = time.time() - self.violation_start
+                    if active_elapsed >= config.violation_timeout_sec:
+                        confirmed_violation = (self.current_violation, active_elapsed)
             else:
-                self.current_violation = violation
-                self.violation_start = time.time()
+                self.reset_violation_state()
+
+        if self.current_violation is None and posture_score >= enter_score and strongest_score >= enter_score * 0.9:
+            self.current_violation = strongest_violation
+            self.violation_start = time.time()
+            started_new_violation = True
+
+        posture_state = "good"
+        if self.current_violation:
+            if started_new_violation:
+                posture_state = "pending"
+            elif self.violation_start:
+                elapsed = active_elapsed if active_elapsed is not None else time.time() - self.violation_start
+                if elapsed >= config.violation_timeout_sec:
+                    confirmed_violation = (self.current_violation, elapsed)
+                    posture_state = "bad"
+                else:
+                    posture_state = "pending"
+            else:
+                posture_state = "pending"
+        elif posture_score > good_score_threshold:
+            posture_state = "pending"
         else:
-            self.current_violation = None
-            self.violation_start = None
-        return None
+            posture_state = "good"
+
+        self.current_posture_score = posture_score
+        self.current_posture_state = posture_state
+        return PostureEvaluation(
+            posture_state=posture_state,
+            posture_score=posture_score,
+            tracking_score=tracking_score,
+            strongest_violation=strongest_violation,
+            strongest_score=strongest_score,
+            deviation_scores=deviation_scores,
+            confirmed_violation=confirmed_violation,
+            calibration_allowed=tracking_score >= config.min_calibration_tracking_confidence,
+            calibration_reason="Press C while sitting straight to recalibrate.",
+            metrics=metrics,
+        )
+
+    def check(self, landmarks, config: Config) -> Optional[tuple[str, float]]:
+        evaluation = self.evaluate(landmarks, config)
+        return evaluation.confirmed_violation
 
 def apply_blur_effect(frame, intensity: float = 0.5):
     h, w = frame.shape[:2]
@@ -383,6 +533,11 @@ class PostureApp:
         self.overlay_available = True
         self.tray_available = not no_tray
         self.last_perf_log_provider: Optional[str] = None
+        self.status_message: Optional[str] = None
+        self.quality_advice: Optional[str] = None
+        self.last_logged_quality_advice: Optional[str] = None
+        self.low_tracking_streak = 0
+        self.pending_posture_streak = 0
 
         model_path = Path("models") / "pose_landmarks_detector_full.onnx"
         self.detector = ONNXPoseDetector(model_path)
@@ -406,7 +561,7 @@ class PostureApp:
             provider = self.detector.provider_short().upper() if self.detector else "N/A"
             self.icon.title = f"Posture Sentinel ({self.camera_status}, {provider})"
 
-    def log_violation(self, violation_type: str, duration_sec: float):
+    def log_violation(self, violation_type: str, duration_sec: float, evaluation: Optional[PostureEvaluation] = None):
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now()
         log_file = self.logs_dir / f"{ts.strftime('%Y-%m-%d')}.jsonl"
@@ -415,6 +570,9 @@ class PostureApp:
             "violation": violation_type,
             "duration_sec": round(duration_sec, 2),
             "camera_status": self.camera_status,
+            "posture_state": evaluation.posture_state if evaluation else self.analyzer.current_posture_state,
+            "posture_score": round(evaluation.posture_score if evaluation else self.analyzer.current_posture_score, 3),
+            "tracking_score": round(evaluation.tracking_score if evaluation else self.analyzer.current_tracking_score, 3),
         }
         with open(log_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -428,6 +586,17 @@ class PostureApp:
 
         summary_file = write_summary_file(self.logs_dir, f"{target_day}.summary.json", summary)
         print(f"Daily summary exported: {summary_file}")
+        return summary_file
+
+    def export_quality_summary(self, day: Optional[str] = None) -> Optional[Path]:
+        target_day = day or datetime.now().strftime("%Y-%m-%d")
+        summary = build_daily_quality_summary(self.logs_dir, target_day)
+        if summary is None:
+            print(f"Quality summary skipped: no log file for {target_day}")
+            return None
+
+        summary_file = write_quality_summary_file(self.logs_dir, f"{target_day}.quality.summary.json", summary)
+        print(f"Quality summary exported: {summary_file}")
         return summary_file
 
 
@@ -455,6 +624,9 @@ class PostureApp:
             overlay_available=self.overlay_available,
             tray_available=self.tray_available,
             provider_changed=provider != self.last_perf_log_provider,
+            posture_state=self.analyzer.current_posture_state,
+            posture_score=round(self.analyzer.current_posture_score, 3),
+            tracking_score=round(self.analyzer.current_tracking_score, 3),
         )
         self.last_perf_log_provider = provider
 
@@ -469,6 +641,9 @@ class PostureApp:
 
     def export_today_summary(self, icon=None, item=None):
         self.export_daily_summary()
+
+    def export_today_quality_summary(self, icon=None, item=None):
+        self.export_quality_summary()
 
     def auto_tune_thresholds(self, icon=None, item=None):
         if not self.config.auto_tune_enabled:
@@ -492,6 +667,38 @@ class PostureApp:
             print(f"Threshold changes: {report.get('changes', {})}")
         else:
             print(f"Auto-tune skipped: {report.get('reason', 'unknown')}")
+
+    def adjust_posture_sensitivity(self, delta: float):
+        self.config.posture_sensitivity = round(max(0.65, min(1.5, self.config.posture_sensitivity + delta)), 2)
+        self.config.save()
+        print(f"Posture sensitivity: {self.config.posture_sensitivity:.2f}")
+
+    def increase_posture_sensitivity(self, icon=None, item=None):
+        self.adjust_posture_sensitivity(0.1)
+
+    def decrease_posture_sensitivity(self, icon=None, item=None):
+        self.adjust_posture_sensitivity(-0.1)
+
+    def adjust_good_posture_threshold(self, delta: float):
+        self.config.good_posture_score_threshold = round(
+            max(0.2, min(0.8, self.config.good_posture_score_threshold + delta)),
+            2,
+        )
+        self.config.save()
+        print(f"Good posture threshold: {self.config.good_posture_score_threshold:.2f}")
+
+    def increase_good_posture_threshold(self, icon=None, item=None):
+        self.adjust_good_posture_threshold(0.05)
+
+    def decrease_good_posture_threshold(self, icon=None, item=None):
+        self.adjust_good_posture_threshold(-0.05)
+
+    def toggle_quality_advice(self, icon=None, item=None):
+        self.config.quality_advice_enabled = not self.config.quality_advice_enabled
+        self.config.save()
+        if not self.config.quality_advice_enabled:
+            self.quality_advice = None
+        print(f"Quality advice enabled: {self.config.quality_advice_enabled}")
 
     def create_icon_image(self, color="green"):
         img = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
@@ -553,14 +760,85 @@ class PostureApp:
         if callable(logger):
             logger(event_type, **payload)
 
-    def get_posture_feedback_state(self, violation: Optional[tuple[str, float]]) -> str:
-        if violation is not None:
-            return "bad"
+    def get_posture_feedback_state(self, evaluation: Optional[PostureEvaluation]) -> str:
+        if evaluation is not None:
+            return evaluation.posture_state
         if self.analyzer.current_violation:
             return "pending"
         if self.analyzer.baseline:
             return "good"
         return "uncalibrated"
+
+    def update_quality_advice(self, evaluation: Optional[PostureEvaluation]):
+        if not self.config.quality_advice_enabled or evaluation is None:
+            self.quality_advice = None
+            self.low_tracking_streak = 0
+            self.pending_posture_streak = 0
+            return
+
+        if evaluation.posture_state == "tracking_low":
+            self.low_tracking_streak += 1
+        else:
+            self.low_tracking_streak = 0
+
+        if evaluation.posture_state == "pending":
+            self.pending_posture_streak += 1
+        else:
+            self.pending_posture_streak = 0
+
+        if self.low_tracking_streak >= 20:
+            self.quality_advice = "Tracking stays weak. Move closer, add light, and keep shoulders visible."
+        elif self.pending_posture_streak >= 30:
+            self.quality_advice = (
+                "Posture is often borderline. Try recalibration or lower sensitivity if you are sitting straight."
+            )
+        elif (
+            evaluation.posture_state == "good"
+            and evaluation.tracking_score >= self.config.min_calibration_tracking_confidence
+            and evaluation.posture_score <= self.config.good_posture_score_threshold * 0.7
+        ):
+            self.quality_advice = "Tracking looks stable. This is a good moment to recalibrate if needed."
+        else:
+            self.quality_advice = None
+
+        last_logged_quality_advice = getattr(self, "last_logged_quality_advice", None)
+        if self.quality_advice and self.quality_advice != last_logged_quality_advice:
+            logger = getattr(self, "log_runtime_event", None)
+            if callable(logger):
+                logger("quality_advice", advice=self.quality_advice)
+            self.last_logged_quality_advice = self.quality_advice
+        elif self.quality_advice is None:
+            self.last_logged_quality_advice = None
+
+    def get_status_message(self, evaluation: Optional[PostureEvaluation]) -> Optional[str]:
+        if self.quality_advice:
+            return self.quality_advice
+        if self.calibrate_requested:
+            if self.analyzer.calibration_message:
+                return self.analyzer.calibration_message
+            return "Sit straight, keep shoulders visible, and hold still for calibration."
+        if evaluation is None:
+            return None
+        if evaluation.posture_state == "tracking_low":
+            return "Tracking is weak. Center yourself and keep your shoulders in frame."
+        if evaluation.posture_state == "uncalibrated":
+            return "Press C to calibrate while sitting straight."
+        if evaluation.posture_state == "good":
+            return (
+                f"Good posture detected. Score {evaluation.posture_score:.2f}, "
+                f"tracking {evaluation.tracking_score:.2f}."
+            )
+        if evaluation.posture_state == "pending":
+            return (
+                f"Borderline posture. Score {evaluation.posture_score:.2f}, "
+                f"tracking {evaluation.tracking_score:.2f}."
+            )
+        if evaluation.confirmed_violation:
+            return (
+                f"Violation: {evaluation.confirmed_violation[0]}. Score {evaluation.posture_score:.2f}, "
+                f"tracking {evaluation.tracking_score:.2f}."
+            )
+        return None
 
     def on_exit(self, icon, item):
         self.running = False
@@ -603,13 +881,21 @@ class PostureApp:
 
     def run_tray(self):
         try:
-            menu = pystray.Menu(pystray.MenuItem("Show/Hide Preview", self.toggle_preview, checked=lambda item: self.show_preview),
-                                pystray.MenuItem("Auto Start", self.toggle_auto_start, checked=lambda item: self.config.auto_start),
-                                pystray.MenuItem("Auto Tune", self.toggle_auto_tune, checked=lambda item: self.config.auto_tune_enabled),
-                                pystray.MenuItem("Calibrate", self.request_calibration),
-                                pystray.MenuItem("Auto-tune Thresholds", self.auto_tune_thresholds),
-                                pystray.MenuItem("Export Daily Summary", self.export_today_summary),
-                                pystray.MenuItem("Exit", self.on_exit))
+            menu = pystray.Menu(
+                pystray.MenuItem("Show/Hide Preview", self.toggle_preview, checked=lambda item: self.show_preview),
+                pystray.MenuItem("Auto Start", self.toggle_auto_start, checked=lambda item: self.config.auto_start),
+                pystray.MenuItem("Auto Tune", self.toggle_auto_tune, checked=lambda item: self.config.auto_tune_enabled),
+                pystray.MenuItem("Quality Advice", self.toggle_quality_advice, checked=lambda item: self.config.quality_advice_enabled),
+                pystray.MenuItem("Sensitivity +", self.increase_posture_sensitivity),
+                pystray.MenuItem("Sensitivity -", self.decrease_posture_sensitivity),
+                pystray.MenuItem("Good Posture +", self.increase_good_posture_threshold),
+                pystray.MenuItem("Good Posture -", self.decrease_good_posture_threshold),
+                pystray.MenuItem("Calibrate", self.request_calibration),
+                pystray.MenuItem("Auto-tune Thresholds", self.auto_tune_thresholds),
+                pystray.MenuItem("Export Daily Summary", self.export_today_summary),
+                pystray.MenuItem("Export Quality Summary", self.export_today_quality_summary),
+                pystray.MenuItem("Exit", self.on_exit),
+            )
             self.icon = pystray.Icon("PostureSentinel", self.create_icon_image(), "Posture Sentinel", menu)
             self.icon.run()
             return True
@@ -704,22 +990,35 @@ class PostureApp:
                 perf_window_start = now
                 perf_frame_count = 0
             status_color = "green"
+            evaluation: Optional[PostureEvaluation] = None
             violation = None
             if results.pose_landmarks:
                 landmarks = results.pose_landmarks.landmark
                 if self.calibrate_requested:
-                    self.config.baseline = self.analyzer.calibrate(landmarks)
-                    self.config.save(); self.calibrate_requested = False
-                    print("Calibrated with new nose-to-shoulder model!")
-                violation = self.analyzer.check(landmarks, self.config)
+                    baseline = self.analyzer.calibrate(landmarks, self.config)
+                    if baseline is not None:
+                        self.config.baseline = baseline
+                        self.config.save()
+                        self.calibrate_requested = False
+                        print("Calibrated with updated posture baseline.")
+                    else:
+                        print(self.analyzer.calibration_message or "Calibration skipped.")
+                evaluation = self.analyzer.evaluate(landmarks, self.config)
+                violation = evaluation.confirmed_violation
                 if violation:
                     status_color = "red"
                     self.blur_intensity = min(1.0, self.blur_intensity + 0.08)
                     if self.last_logged_violation != violation[0]:
-                        self.log_violation(violation[0], violation[1])
+                        self.log_violation(violation[0], violation[1], evaluation)
                         self.last_logged_violation = violation[0]
-                elif self.analyzer.current_violation:
+                elif evaluation.posture_state == "pending":
                     status_color = "orange"
+                    self.blur_intensity = max(0.0, self.blur_intensity - 0.08)
+                    self.last_logged_violation = None
+                elif evaluation.posture_state == "tracking_low":
+                    status_color = "gray"
+                    self.blur_intensity = max(0.0, self.blur_intensity - 0.15)
+                    self.last_logged_violation = None
                 else:
                     self.blur_intensity = max(0.0, self.blur_intensity - 0.25)
                     self.last_logged_violation = None
@@ -740,9 +1039,13 @@ class PostureApp:
                             cx, cy = int(lm.x * w), int(lm.y * h)
                             cv2.circle(frame, (cx, cy), 2, (0, 255, 0), -1)
             else:
+                self.analyzer.current_tracking_score = 0.0
+                self.analyzer.current_posture_state = "tracking_low" if self.analyzer.baseline else "uncalibrated"
                 self.blur_intensity = max(0.0, self.blur_intensity - 0.1)
                 self.last_logged_violation = None
-            posture_feedback_state = self.get_posture_feedback_state(violation)
+            posture_feedback_state = self.get_posture_feedback_state(evaluation)
+            self.update_quality_advice(evaluation)
+            self.status_message = self.get_status_message(evaluation)
             warning_visible = posture_feedback_state == "bad"
             if self.overlay:
                 self.overlay.set_alpha(self.blur_intensity)
@@ -753,8 +1056,10 @@ class PostureApp:
                     blur_amt = int(51 * self.blur_intensity)
                     if blur_amt % 2 == 0: blur_amt += 1
                     frame = cv2.GaussianBlur(frame, (blur_amt, blur_amt), 0)
-                if self.calibrate_requested: cv2.putText(frame, "CALIBRATING...", (50, 50), 1, 2, (0,255,255), 2)
-                if violation: cv2.putText(frame, f"VIOLATION: {violation[0]}", (50, 100), 1, 1.5, (0,0,255), 2)
+                if self.calibrate_requested:
+                    cv2.putText(frame, "CALIBRATING...", (50, 50), 1, 2, (0,255,255), 2)
+                if violation:
+                    cv2.putText(frame, f"VIOLATION: {violation[0]}", (50, 100), 1, 1.5, (0,0,255), 2)
                 if warning_visible:
                     text = "НЕРОВНАЯ ОСАНКА"
                     font = cv2.FONT_HERSHEY_SIMPLEX
@@ -775,6 +1080,16 @@ class PostureApp:
                     text_y = max(frame.shape[0] // 2, text_size[1] + 20)
                     cv2.putText(frame, text, (text_x + 4, text_y + 4), font, scale, (0, 0, 0), thickness + 2)
                     cv2.putText(frame, text, (text_x, text_y), font, scale, (0, 180, 0), thickness)
+                elif posture_feedback_state == "tracking_low":
+                    text = "TRACKING IS TOO WEAK"
+                    font = cv2.FONT_HERSHEY_SIMPLEX
+                    scale = 1.1
+                    thickness = 3
+                    text_size, _ = cv2.getTextSize(text, font, scale, thickness)
+                    text_x = max((frame.shape[1] - text_size[0]) // 2, 20)
+                    text_y = max(frame.shape[0] // 2, text_size[1] + 20)
+                    cv2.putText(frame, text, (text_x + 3, text_y + 3), font, scale, (0, 0, 0), thickness + 2)
+                    cv2.putText(frame, text, (text_x, text_y), font, scale, (120, 200, 255), thickness)
                 elif posture_feedback_state == "uncalibrated":
                     text = "НУЖНА КАЛИБРОВКА (C)"
                     font = cv2.FONT_HERSHEY_SIMPLEX
@@ -785,9 +1100,33 @@ class PostureApp:
                     text_y = max(frame.shape[0] // 2, text_size[1] + 20)
                     cv2.putText(frame, text, (text_x + 3, text_y + 3), font, scale, (0, 0, 0), thickness + 2)
                     cv2.putText(frame, text, (text_x, text_y), font, scale, (0, 220, 255), thickness)
+                elif posture_feedback_state == "pending":
+                    text = "ADJUST YOUR POSTURE"
+                    font = cv2.FONT_HERSHEY_SIMPLEX
+                    scale = 1.4
+                    thickness = 3
+                    text_size, _ = cv2.getTextSize(text, font, scale, thickness)
+                    text_x = max((frame.shape[1] - text_size[0]) // 2, 20)
+                    text_y = max(frame.shape[0] // 2, text_size[1] + 20)
+                    cv2.putText(frame, text, (text_x + 3, text_y + 3), font, scale, (0, 0, 0), thickness + 2)
+                    cv2.putText(frame, text, (text_x, text_y), font, scale, (0, 180, 255), thickness)
+                if self.status_message:
+                    cv2.putText(
+                        frame,
+                        self.status_message[:90],
+                        (20, frame.shape[0] - 60),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.55,
+                        (255, 255, 255),
+                        2
+                    )
                 cv2.putText(
                     frame,
-                    f"Provider: {self.detector.provider_short().upper()} | FPS: {current_fps:.1f}",
+                    (
+                        f"Provider: {self.detector.provider_short().upper()} | FPS: {current_fps:.1f} | "
+                        f"Score: {self.analyzer.current_posture_score:.2f} | "
+                        f"Track: {self.analyzer.current_tracking_score:.2f}"
+                    ),
                     (20, 30),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.6,

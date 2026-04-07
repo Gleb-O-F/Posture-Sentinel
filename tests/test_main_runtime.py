@@ -69,20 +69,35 @@ main = importlib.import_module("main")
 
 
 class MainRuntimeTests(unittest.TestCase):
-    def _make_landmarks(self, *, nose_x=0.5, nose_y=0.3, ls=(0.4, 0.6), rs=(0.6, 0.6), le=(0.45, 0.32), re=(0.55, 0.32)):
-        landmarks = [main.Landmark(0.0, 0.0, 0.0) for _ in range(33)]
-        landmarks[0] = main.Landmark(nose_x, nose_y, 0.0)
-        landmarks[7] = main.Landmark(le[0], le[1], 0.0)
-        landmarks[8] = main.Landmark(re[0], re[1], 0.0)
-        landmarks[11] = main.Landmark(ls[0], ls[1], 0.0)
-        landmarks[12] = main.Landmark(rs[0], rs[1], 0.0)
+    def _make_landmarks(
+        self,
+        *,
+        nose_x=0.5,
+        nose_y=0.3,
+        ls=(0.4, 0.6),
+        rs=(0.6, 0.6),
+        le=(0.45, 0.32),
+        re=(0.55, 0.32),
+        tracking=1.0,
+    ):
+        landmarks = [main.Landmark(0.0, 0.0, 0.0, tracking, tracking) for _ in range(33)]
+        landmarks[0] = main.Landmark(nose_x, nose_y, 0.0, tracking, tracking)
+        landmarks[7] = main.Landmark(le[0], le[1], 0.0, tracking, tracking)
+        landmarks[8] = main.Landmark(re[0], re[1], 0.0, tracking, tracking)
+        landmarks[11] = main.Landmark(ls[0], ls[1], 0.0, tracking, tracking)
+        landmarks[12] = main.Landmark(rs[0], rs[1], 0.0, tracking, tracking)
         return landmarks
 
     def test_get_posture_feedback_state_distinguishes_good_and_bad_posture(self):
         app = SimpleNamespace(analyzer=SimpleNamespace(current_violation=None, baseline={"neck_dist": 1.0}))
+        bad_eval = main.PostureEvaluation(posture_state="bad", confirmed_violation=("slouching", 3.2))
+        pending_eval = main.PostureEvaluation(posture_state="pending")
+        tracking_eval = main.PostureEvaluation(posture_state="tracking_low")
 
-        self.assertEqual(main.PostureApp.get_posture_feedback_state(app, ("slouching", 3.2)), "bad")
+        self.assertEqual(main.PostureApp.get_posture_feedback_state(app, bad_eval), "bad")
         self.assertEqual(main.PostureApp.get_posture_feedback_state(app, None), "good")
+        self.assertEqual(main.PostureApp.get_posture_feedback_state(app, pending_eval), "pending")
+        self.assertEqual(main.PostureApp.get_posture_feedback_state(app, tracking_eval), "tracking_low")
 
         app.analyzer.current_violation = "slouching"
         self.assertEqual(main.PostureApp.get_posture_feedback_state(app, None), "pending")
@@ -107,8 +122,11 @@ class MainRuntimeTests(unittest.TestCase):
         config = main.Config()
         landmarks = self._make_landmarks()
 
-        analyzer.calibrate(landmarks)
-        self.assertIsNone(analyzer.check(landmarks, config))
+        analyzer.calibrate(landmarks, config)
+        evaluation = analyzer.evaluate(landmarks, config)
+
+        self.assertIsNone(evaluation.confirmed_violation)
+        self.assertEqual(evaluation.posture_state, "good")
         self.assertIsNone(analyzer.current_violation)
 
     def test_posture_analyzer_reports_slouch_after_timeout(self):
@@ -117,12 +135,100 @@ class MainRuntimeTests(unittest.TestCase):
         good_landmarks = self._make_landmarks()
         slouch_landmarks = self._make_landmarks(nose_y=0.42, le=(0.45, 0.43), re=(0.55, 0.43))
 
-        analyzer.calibrate(good_landmarks)
+        analyzer.calibrate(good_landmarks, config)
         with patch.object(main.time, "time", side_effect=[10.0, 14.2]):
             self.assertIsNone(analyzer.check(slouch_landmarks, config))
             violation = analyzer.check(slouch_landmarks, config)
 
         self.assertEqual(violation[0], "slouching")
+
+    def test_calibration_requires_good_tracking_quality(self):
+        analyzer = main.PostureAnalyzer()
+        config = main.Config(min_calibration_tracking_confidence=0.7)
+        weak_landmarks = self._make_landmarks(tracking=0.35)
+
+        baseline = analyzer.calibrate(weak_landmarks, config)
+
+        self.assertIsNone(baseline)
+        self.assertEqual(analyzer.calibration_message, "Tracking quality is too low for calibration.")
+
+    def test_posture_analyzer_marks_low_tracking_as_separate_state(self):
+        analyzer = main.PostureAnalyzer()
+        config = main.Config(min_tracking_confidence=0.6)
+        good_landmarks = self._make_landmarks()
+        weak_landmarks = self._make_landmarks(tracking=0.2)
+
+        analyzer.calibrate(good_landmarks, config)
+        evaluation = analyzer.evaluate(weak_landmarks, config)
+
+        self.assertEqual(evaluation.posture_state, "tracking_low")
+        self.assertIsNone(evaluation.confirmed_violation)
+
+    def test_update_quality_advice_warns_about_low_tracking(self):
+        app = SimpleNamespace(
+            config=main.Config(quality_advice_enabled=True, min_calibration_tracking_confidence=0.7),
+            quality_advice=None,
+            low_tracking_streak=19,
+            pending_posture_streak=0,
+        )
+        evaluation = main.PostureEvaluation(posture_state="tracking_low", tracking_score=0.2)
+
+        main.PostureApp.update_quality_advice(app, evaluation)
+
+        self.assertIn("Tracking stays weak", app.quality_advice)
+
+    def test_update_quality_advice_suggests_recalibration_for_borderline_posture(self):
+        app = SimpleNamespace(
+            config=main.Config(quality_advice_enabled=True, min_calibration_tracking_confidence=0.7),
+            quality_advice=None,
+            low_tracking_streak=0,
+            pending_posture_streak=29,
+        )
+        evaluation = main.PostureEvaluation(posture_state="pending", tracking_score=0.88, posture_score=0.7)
+
+        main.PostureApp.update_quality_advice(app, evaluation)
+
+        self.assertIn("borderline", app.quality_advice)
+
+    def test_adjust_posture_sensitivity_clamps_and_saves(self):
+        saves = []
+        app = SimpleNamespace(config=main.Config(posture_sensitivity=1.45))
+        app.config.save = lambda: saves.append(app.config.posture_sensitivity)
+
+        main.PostureApp.adjust_posture_sensitivity(app, 0.2)
+
+        self.assertEqual(app.config.posture_sensitivity, 1.5)
+        self.assertEqual(len(saves), 1)
+
+    def test_update_quality_advice_logs_new_advice_once(self):
+        logged = []
+        app = SimpleNamespace(
+            config=main.Config(quality_advice_enabled=True, min_calibration_tracking_confidence=0.7),
+            quality_advice=None,
+            last_logged_quality_advice=None,
+            low_tracking_streak=19,
+            pending_posture_streak=0,
+            log_runtime_event=lambda event, **payload: logged.append((event, payload)),
+        )
+        evaluation = main.PostureEvaluation(posture_state="tracking_low", tracking_score=0.2)
+
+        main.PostureApp.update_quality_advice(app, evaluation)
+        main.PostureApp.update_quality_advice(app, evaluation)
+
+        self.assertEqual(len(logged), 1)
+        self.assertEqual(logged[0][0], "quality_advice")
+
+    def test_export_quality_summary_returns_written_file(self):
+        with patch.object(main, "build_daily_quality_summary", return_value={"label": "2026-04-07"}) as build_mock, patch.object(
+            main, "write_quality_summary_file", return_value=main.Path("logs/2026-04-07.quality.summary.json")
+        ) as write_mock:
+            app = SimpleNamespace(logs_dir=main.Path("logs"))
+
+            result = main.PostureApp.export_quality_summary(app, "2026-04-07")
+
+        self.assertEqual(str(result), "logs\\2026-04-07.quality.summary.json")
+        build_mock.assert_called_once()
+        write_mock.assert_called_once()
 
     def test_run_overlay_disables_overlay_after_failure(self):
         app = SimpleNamespace(config=SimpleNamespace(overlay_color="#FFFFFF"), overlay=None, overlay_available=True)
@@ -145,13 +251,19 @@ class MainRuntimeTests(unittest.TestCase):
             toggle_preview=lambda *args, **kwargs: None,
             toggle_auto_start=lambda *args, **kwargs: None,
             toggle_auto_tune=lambda *args, **kwargs: None,
+            toggle_quality_advice=lambda *args, **kwargs: None,
+            increase_posture_sensitivity=lambda *args, **kwargs: None,
+            decrease_posture_sensitivity=lambda *args, **kwargs: None,
+            increase_good_posture_threshold=lambda *args, **kwargs: None,
+            decrease_good_posture_threshold=lambda *args, **kwargs: None,
             request_calibration=lambda *args, **kwargs: None,
             auto_tune_thresholds=lambda *args, **kwargs: None,
             export_today_summary=lambda *args, **kwargs: None,
+            export_today_quality_summary=lambda *args, **kwargs: None,
             on_exit=lambda *args, **kwargs: None,
             create_icon_image=lambda *args, **kwargs: object(),
             show_preview=True,
-            config=SimpleNamespace(auto_start=False, auto_tune_enabled=True),
+            config=SimpleNamespace(auto_start=False, auto_tune_enabled=True, quality_advice_enabled=True),
             icon=None,
             tray_available=True,
         )
@@ -181,13 +293,19 @@ class MainRuntimeTests(unittest.TestCase):
             toggle_preview=lambda *args, **kwargs: None,
             toggle_auto_start=lambda *args, **kwargs: None,
             toggle_auto_tune=lambda *args, **kwargs: None,
+            toggle_quality_advice=lambda *args, **kwargs: None,
+            increase_posture_sensitivity=lambda *args, **kwargs: None,
+            decrease_posture_sensitivity=lambda *args, **kwargs: None,
+            increase_good_posture_threshold=lambda *args, **kwargs: None,
+            decrease_good_posture_threshold=lambda *args, **kwargs: None,
             request_calibration=lambda *args, **kwargs: None,
             auto_tune_thresholds=lambda *args, **kwargs: None,
             export_today_summary=lambda *args, **kwargs: None,
+            export_today_quality_summary=lambda *args, **kwargs: None,
             on_exit=lambda *args, **kwargs: None,
             create_icon_image=lambda *args, **kwargs: object(),
             show_preview=False,
-            config=SimpleNamespace(auto_start=True, auto_tune_enabled=False),
+            config=SimpleNamespace(auto_start=True, auto_tune_enabled=False, quality_advice_enabled=True),
             icon=None,
             tray_available=True,
         )

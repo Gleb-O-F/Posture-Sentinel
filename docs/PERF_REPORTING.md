@@ -47,3 +47,31 @@ The generated summary includes:
 2. Build a daily or range summary with `tools/perf_report.py`.
 3. Compare `avg_fps` and `provider_switches` before changing thresholds.
 4. Tune `min_fps_before_cpu_fallback` only after reviewing real telemetry.
+
+## Posture Quality Reporting
+
+Violation logs now also contain `posture_state`, `posture_score`, and `tracking_score`.
+
+Generate a quality summary for one day:
+
+```bash
+python tools/quality_report.py --date 2026-04-07 --print
+```
+
+Generate a quality summary for a date range:
+
+```bash
+python tools/quality_report.py --from 2026-04-05 --to 2026-04-07 --print
+```
+
+The quality summary includes:
+
+- `posture_state_counts`
+- `avg_posture_score`
+- `avg_tracking_score`
+- `max_posture_score`
+- `min_tracking_score`
+- `violation_quality`
+- `recommendations`
+
+The runtime performance log can also contain `quality_advice` events, which record when the app suggested recalibration, better framing, or sensitivity adjustments.

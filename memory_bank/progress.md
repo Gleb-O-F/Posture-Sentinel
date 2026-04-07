@@ -2,7 +2,9 @@
 
 ## Current State
 
-Memory Bank is synchronized, the local Windows environment is operational, and the project now passes bootstrap, diagnostics, automated tests, bounded smoke validation, and a real perf-log review on the target machine. Project deliverables are functionally complete.
+Memory Bank is synchronized, the local Windows environment is operational, and the project now passes bootstrap, diagnostics, automated tests, bounded smoke validation, and a real perf-log review on the target machine.
+
+As of 2026-04-07, the confirmed posture-quality scope extension has been implemented: recognition is now stabilized with smoothing and hysteresis, calibration is gated by tracking quality, posture accuracy is configurable, and analytics include richer posture-state telemetry.
 
 ## Completed Areas
 
@@ -44,6 +46,13 @@ Memory Bank is synchronized, the local Windows environment is operational, and t
 
 | 2026-03-24 | Replaced the old single-metric posture detection with a calibrated multi-metric deviation model and reset malformed local config to require fresh calibration |
 
+| 2026-03-27 | Started a quality pass for smoothing, hysteresis, calibration onboarding, tracking confidence, sensitivity settings, and richer analytics |
+| 2026-04-07 | Confirmed an expanded quality scope for posture recognition accuracy, including better straight-posture detection, smoothing, hysteresis, onboarding, and richer analytics; implementation is now in progress |
+| 2026-04-07 | Completed the posture-quality pass with smoothed posture scoring, hysteresis, tracking-quality gating, improved calibration UX, sensitivity controls, and richer analytics plus new runtime tests |
+| 2026-04-07 | Added a dedicated posture-quality reporting pipeline and CLI to summarize posture score, tracking score, and posture-state distribution from daily logs |
+| 2026-04-07 | Added tray-based quality controls, runtime auto-advice for weak tracking and borderline posture, and recommendation output in the quality report |
+| 2026-04-07 | Added tray export for quality summaries and runtime telemetry for emitted quality advice so operator guidance can be audited later |
+
 ## Change Control
 
-last_checked_commit: f66db1c8d4abf5b26469b080c25de0128a472acf
+last_checked_commit: 05e18fe9edd69bb735504d523bbe691709323af4

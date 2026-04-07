@@ -4,14 +4,19 @@
 
 - `main.py` owns application bootstrap, camera capture, provider selection, calibration state, violation detection, and desktop UX orchestration.
 - Pose inference runs through ONNX Runtime with `DmlExecutionProvider` preferred and `CPUExecutionProvider` as explicit fallback.
-- Posture decisions are threshold-based and compare current landmark metrics against a persisted baseline in `config.yaml`.
+- Posture decisions compare smoothed landmark metrics against a persisted baseline in `config.yaml`, then use posture-score thresholds plus hysteresis to stabilize transitions between `good`, `pending`, `bad`, and `tracking_low`.
 - Soft feedback is layered through preview rendering, tray state, and a click-through fullscreen overlay.
 - Preview rendering falls back to manual landmark-point drawing when the installed `mediapipe` package does not expose the legacy `solutions` helpers.
+- Calibration now depends on minimum tracking quality so low-confidence frames do not establish a misleading baseline.
 
 ## Data Flow Patterns
 
 - Violation events are appended to daily JSONL files under `logs/`.
+- Runtime logs include posture score, tracking score, and posture state so misclassification can be analyzed after real usage.
 - Summary and performance CLIs rebuild derived reports from log files instead of depending on GUI session state.
+- A dedicated posture-quality CLI summarizes state distribution and score quality from existing violation logs without needing separate runtime instrumentation.
+- The tray menu now doubles as a lightweight operator console for quality tuning and advice toggling, avoiding direct edits to `config.yaml` during normal use.
+- Runtime quality advice is also written to performance telemetry so later analysis can compare recommendations against operator outcomes.
 - Threshold tuning reads recent log history, applies bounded adjustments, and writes updated runtime configuration locally.
 
 ## Resilience Patterns

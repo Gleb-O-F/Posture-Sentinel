@@ -15,13 +15,15 @@
 
 ## Important Files
 
-- `main.py`: runtime, inference, calibration, UI orchestration, logging
+- `main.py`: runtime, inference, smoothed posture scoring, calibration quality gating, tray quality controls, UI orchestration, logging
 - `reporting.py`: violation aggregation and summary serialization
 - `performance_reporting.py`: performance telemetry aggregation
+- `posture_quality_reporting.py`: posture score and tracking quality aggregation
 - `tuning.py`: bounded threshold auto-tuning
 - `tools/check_env.py`: environment diagnostics
 - `tools/report.py`: violation summary CLI
 - `tools/perf_report.py`: performance summary CLI
+- `tools/quality_report.py`: posture quality summary CLI
 - `tools/tune.py`: tuning CLI
 - `tools/bootstrap.ps1`: environment bootstrap
 - `tools/run.ps1`: guarded launch
