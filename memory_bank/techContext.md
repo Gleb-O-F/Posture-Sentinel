@@ -18,7 +18,7 @@
 - `main.py`: runtime, inference, smoothed posture scoring, away detection, break reminders, session analytics, tray quality controls, UI orchestration, logging
 - `reporting.py`: violation aggregation and summary serialization
 - `performance_reporting.py`: performance telemetry aggregation
-- `posture_quality_reporting.py`: posture score and tracking quality aggregation
+- `posture_quality_reporting.py`: posture score, tracking quality, and daily trend aggregation
 - `tuning.py`: bounded threshold auto-tuning
 - `tools/check_env.py`: environment diagnostics
 - `tools/report.py`: violation summary CLI

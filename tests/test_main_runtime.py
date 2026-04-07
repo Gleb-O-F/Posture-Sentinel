@@ -1,5 +1,7 @@
-﻿import importlib
+import importlib
+import json
 import sys
+import tempfile
 import types
 import unittest
 from types import SimpleNamespace
@@ -116,6 +118,20 @@ class MainRuntimeTests(unittest.TestCase):
             config = main.Config.load("config.yaml")
 
         self.assertIsNone(config.baseline)
+
+    def test_config_load_backs_up_and_rewrites_invalid_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = main.Path(tmp) / "config.yaml"
+            config_path.write_text('{"baseline": ', encoding="utf-8")
+
+            config = main.Config.load(str(config_path))
+
+            self.assertIsNone(config.baseline)
+            self.assertTrue(config_path.exists())
+            backups = list(main.Path(tmp).glob("config.yaml.broken-*.bak"))
+            self.assertEqual(len(backups), 1)
+            rewritten = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertIn("camera_id", rewritten)
 
     def test_posture_analyzer_treats_calibrated_pose_as_good(self):
         analyzer = main.PostureAnalyzer()

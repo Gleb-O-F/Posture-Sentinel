@@ -89,6 +89,8 @@ class PostureQualityReportingTests(unittest.TestCase):
             self.assertEqual(summary["total_events"], 2)
             self.assertEqual(len(summary["source_log_files"]), 2)
             self.assertEqual(summary["max_posture_score"], 1.4)
+            self.assertEqual(len(summary["daily_trends"]), 2)
+            self.assertEqual(summary["daily_trends"][0]["day"], "2026-04-05")
 
     def test_build_quality_summary_recommends_tracking_improvements(self):
         with tempfile.TemporaryDirectory() as tmp:

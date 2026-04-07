@@ -98,6 +98,7 @@ class PerformanceReportingTests(unittest.TestCase):
             self.assertEqual(summary["failures"][0]["event"], "overlay_failure")
             self.assertEqual(summary["quality_advice_events"][0]["advice"], "Tracking stays weak.")
             self.assertEqual(summary["session_summaries"][0]["away_count"], 1)
+            self.assertEqual(summary["daily_session_trends"][0]["avg_session_minutes"], 42.0)
 
     def test_build_range_perf_summary_uses_existing_files_only(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -125,6 +126,20 @@ class PerformanceReportingTests(unittest.TestCase):
                         "error": "tray boom",
                     }
                 )
+                + "\n"
+                + json.dumps(
+                    {
+                        "timestamp": "2026-03-12T11:00:00",
+                        "event": "session_summary",
+                        "provider": "cpu",
+                        "camera_status": "ok",
+                        "session_minutes": 50.0,
+                        "present_minutes": 43.0,
+                        "away_count": 1,
+                        "return_count": 1,
+                        "break_reminders": 1,
+                    }
+                )
                 + "\n",
                 encoding="utf-8",
             )
@@ -132,10 +147,11 @@ class PerformanceReportingTests(unittest.TestCase):
             summary = build_range_perf_summary(logs_dir, "2026-03-10", "2026-03-12")
 
             self.assertIsNotNone(summary)
-            self.assertEqual(summary["total_events"], 2)
+            self.assertEqual(summary["total_events"], 3)
             self.assertEqual(len(summary["source_perf_files"]), 2)
             self.assertEqual(summary["camera_status_counts"]["reconnecting"], 1)
-            self.assertEqual(summary["provider_counts"]["cpu"], 1)
+            self.assertEqual(summary["provider_counts"]["cpu"], 2)
+            self.assertEqual(summary["daily_session_trends"][0]["day"], "2026-03-12")
 
     def test_write_perf_summary_file_persists_json(self):
         with tempfile.TemporaryDirectory() as tmp:

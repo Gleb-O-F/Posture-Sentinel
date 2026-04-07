@@ -45,6 +45,7 @@ The generated summary includes:
 - `failures`
 - `quality_advice_events`
 - `session_summaries`
+- `daily_session_trends`
 - `malformed_lines`
 
 ## Recommended Profiling Flow
@@ -77,6 +78,7 @@ The quality summary includes:
 - `avg_tracking_score`
 - `max_posture_score`
 - `min_tracking_score`
+- `daily_trends`
 - `violation_quality`
 - `recommendations`
 

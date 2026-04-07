@@ -26,6 +26,67 @@ def _load_perf_entries(log_files: Iterable[Path]) -> tuple[list[dict], int]:
     return entries, malformed_lines
 
 
+def _safe_float(value, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_int(value, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _build_daily_session_trends(session_summaries: Iterable[dict]) -> list[dict]:
+    by_day: Dict[str, dict] = {}
+
+    for item in session_summaries:
+        timestamp = str(item.get("timestamp", ""))
+        day = timestamp.split("T", 1)[0] if "T" in timestamp else timestamp[:10]
+        if not day:
+            day = "unknown"
+
+        trend = by_day.setdefault(
+            day,
+            {
+                "day": day,
+                "sessions": 0,
+                "total_session_minutes": 0.0,
+                "total_present_minutes": 0.0,
+                "total_away_count": 0,
+                "total_return_count": 0,
+                "total_break_reminders": 0,
+            },
+        )
+        trend["sessions"] += 1
+        trend["total_session_minutes"] += _safe_float(item.get("session_minutes"))
+        trend["total_present_minutes"] += _safe_float(item.get("present_minutes"))
+        trend["total_away_count"] += _safe_int(item.get("away_count"))
+        trend["total_return_count"] += _safe_int(item.get("return_count"))
+        trend["total_break_reminders"] += _safe_int(item.get("break_reminders"))
+
+    daily_trends = []
+    for day in sorted(by_day.keys()):
+        trend = by_day[day]
+        sessions = max(int(trend["sessions"]), 1)
+        daily_trends.append(
+            {
+                "day": day,
+                "sessions": int(trend["sessions"]),
+                "avg_session_minutes": round(trend["total_session_minutes"] / sessions, 2),
+                "avg_present_minutes": round(trend["total_present_minutes"] / sessions, 2),
+                "total_away_count": int(trend["total_away_count"]),
+                "total_return_count": int(trend["total_return_count"]),
+                "total_break_reminders": int(trend["total_break_reminders"]),
+            }
+        )
+
+    return daily_trends
+
+
 def build_perf_summary(entries: Iterable[dict], malformed_lines: int, label: str, source_files: list[str]) -> dict:
     total_events = 0
     event_counts: Dict[str, int] = {}
@@ -133,6 +194,7 @@ def build_perf_summary(entries: Iterable[dict], malformed_lines: int, label: str
         "failures": failures,
         "quality_advice_events": quality_advice_events,
         "session_summaries": session_summaries,
+        "daily_session_trends": _build_daily_session_trends(session_summaries),
         "malformed_lines": malformed_lines,
     }
 

@@ -8,6 +8,7 @@
 - Soft feedback is layered through preview rendering, tray state, and a click-through fullscreen overlay.
 - Preview rendering falls back to manual landmark-point drawing when the installed `mediapipe` package does not expose the legacy `solutions` helpers.
 - Calibration now depends on minimum tracking quality so low-confidence frames do not establish a misleading baseline.
+- Broken or truncated `config.yaml` files are backed up and replaced with a recoverable default config so the app can still start safely.
 - Away detection pauses posture pressure when no person is reliably present, and a session timer tracks away/return transitions plus break reminders.
 
 ## Data Flow Patterns
@@ -19,6 +20,7 @@
 - The tray menu now doubles as a lightweight operator console for quality tuning and advice toggling, avoiding direct edits to `config.yaml` during normal use.
 - Runtime quality advice is also written to performance telemetry so later analysis can compare recommendations against operator outcomes.
 - Session summaries are emitted into performance telemetry on shutdown so later analysis can review time at desk, away counts, break reminders, and state durations.
+- Posture-quality summaries now include per-day trend slices so tuning decisions can be based on movement over time, not only one aggregate snapshot.
 - Threshold tuning reads recent log history, applies bounded adjustments, and writes updated runtime configuration locally.
 
 ## Resilience Patterns

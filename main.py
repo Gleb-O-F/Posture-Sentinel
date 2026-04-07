@@ -121,10 +121,34 @@ class Config:
                 filtered_data["baseline"] = cls.normalize_baseline(filtered_data.get("baseline"))
                 if raw_baseline and filtered_data["baseline"] is None:
                     print("Legacy baseline detected in config.yaml; recalibration is required.")
+                    config = cls(**filtered_data)
+                    config.save(path)
+                    return config
                 return cls(**filtered_data)
             except Exception as e:
                 print(f"Warning: failed to load config from {config_path}: {e}")
+                backup_path = cls.backup_problematic_config(config_path)
+                default_config = cls()
+                default_config.save(path)
+                if backup_path is not None:
+                    print(f"Problematic config was backed up to {backup_path}")
         return cls()
+
+    @staticmethod
+    def backup_problematic_config(config_path: Path) -> Optional[Path]:
+        if not config_path.exists():
+            return None
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        backup_path = config_path.with_suffix(f"{config_path.suffix}.broken-{timestamp}.bak")
+        try:
+            with open(config_path, "r", encoding="utf-8", errors="replace") as src, open(
+                backup_path, "w", encoding="utf-8"
+            ) as dst:
+                dst.write(src.read())
+            return backup_path
+        except Exception as backup_error:
+            print(f"Warning: failed to back up problematic config: {backup_error}")
+            return None
 
     def save(self, path: str = "config.yaml"):
         with open(path, "w", encoding="utf-8") as f:

@@ -33,7 +33,52 @@ def _safe_float(value, default: float = 0.0) -> float:
         return default
 
 
+def _build_daily_trends(entries: Iterable[dict]) -> list[dict]:
+    by_day: Dict[str, dict] = {}
+
+    for item in entries:
+        timestamp = str(item.get("timestamp", ""))
+        day = timestamp.split("T", 1)[0] if "T" in timestamp else timestamp[:10]
+        if not day:
+            day = "unknown"
+
+        posture_score = _safe_float(item.get("posture_score"))
+        tracking_score = _safe_float(item.get("tracking_score"))
+        posture_state = str(item.get("posture_state", "unknown"))
+
+        trend = by_day.setdefault(
+            day,
+            {
+                "day": day,
+                "events": 0,
+                "total_posture_score": 0.0,
+                "total_tracking_score": 0.0,
+                "posture_state_counts": {},
+            },
+        )
+        trend["events"] += 1
+        trend["total_posture_score"] += posture_score
+        trend["total_tracking_score"] += tracking_score
+        trend["posture_state_counts"][posture_state] = trend["posture_state_counts"].get(posture_state, 0) + 1
+
+    daily_trends = []
+    for day in sorted(by_day.keys()):
+        trend = by_day[day]
+        events = max(int(trend["events"]), 1)
+        daily_trends.append(
+            {
+                "day": day,
+                "events": int(trend["events"]),
+                "avg_posture_score": round(trend["total_posture_score"] / events, 3),
+                "avg_tracking_score": round(trend["total_tracking_score"] / events, 3),
+                "posture_state_counts": trend["posture_state_counts"],
+            }
+        )
+    return daily_trends
+
+
 def build_quality_summary(entries: Iterable[dict], malformed_lines: int, label: str, source_files: list[str]) -> dict:
+    entries = list(entries)
     total_events = 0
     posture_state_counts: Dict[str, int] = {}
     posture_scores: list[float] = []
@@ -116,6 +161,7 @@ def build_quality_summary(entries: Iterable[dict], malformed_lines: int, label: 
         "avg_tracking_score": avg_tracking_score,
         "max_posture_score": round(max(posture_scores), 3) if posture_scores else 0.0,
         "min_tracking_score": round(min(tracking_scores), 3) if tracking_scores else 0.0,
+        "daily_trends": _build_daily_trends(entries),
         "violation_quality": per_violation_scores,
         "recommendations": recommendations,
         "malformed_lines": malformed_lines,

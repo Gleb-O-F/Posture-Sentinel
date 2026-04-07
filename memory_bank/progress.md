@@ -56,6 +56,8 @@ As of 2026-04-07, the ergonomics-assistant scope extension is also implemented: 
 | 2026-04-07 | Added tray export for quality summaries and runtime telemetry for emitted quality advice so operator guidance can be audited later |
 | 2026-04-07 | Started an ergonomics-assistant pass for away/return detection, break reminders, session analytics, reason-specific feedback, and stricter straight-posture tuning |
 | 2026-04-07 | Added away/return detection, break reminders, session analytics, reason-specific feedback messaging, and a stricter straight-posture threshold with runtime and summary coverage |
+| 2026-04-07 | Added safe recovery for broken `config.yaml` files and daily trend slices in the posture-quality report |
+| 2026-04-07 | Added daily session trends to performance summaries so ergonomics usage can be reviewed over time, not only per single session |
 
 ## Change Control
 

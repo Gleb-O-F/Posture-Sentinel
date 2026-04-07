@@ -32,5 +32,5 @@ No hard delivery blocker is present. The remaining work is now iterative tuning 
 ## Next Execution Steps
 
 1. Collect real usage logs to tune the default straight-posture threshold and break-reminder cadence.
-2. Review whether away detection should also consider very low-confidence partial landmarks, not only full pose absence.
-3. Consider adding historical session trends to the existing reports once enough session-summary data accumulates.
+2. Review the new daily quality trends and see whether they are enough before adding heavier historical dashboards.
+3. Consider whether away detection should also consider very low-confidence partial landmarks, not only full pose absence.
